@@ -33,8 +33,27 @@
       },
       "icons": {
         "ios": {
-          "iphone": {},
-          "ipad": {}
+          "iphone": {
+            "app@2x": "logo.png",
+            "app@3x": "logo.png",
+            "notification@2x": "logo.png",
+            "notification@3x": "logo.png",
+            "settings@2x": "logo.png",
+            "settings@3x": "logo.png",
+            "spotlight@2x": "logo.png",
+            "spotlight@3x": "logo.png"
+          },
+          "ipad": {
+            "app": "logo.png",
+            "app@2x": "logo.png",
+            "notification": "logo.png",
+            "notification@2x": "logo.png",
+            "pro@2x": "logo.png",
+            "settings": "logo.png",
+            "settings@2x": "logo.png",
+            "spotlight": "logo.png",
+            "spotlight@2x": "logo.png"
+          }
         }
       }
     }
