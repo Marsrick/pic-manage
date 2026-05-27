@@ -31,6 +31,10 @@ jobs:
           npx cap add ios
           npx cap sync ios
 
+      - name: Generate iOS App Icons from logo
+        run: |
+          npx capacitor-assets generate --ios --iconBackgroundColor '#FFFFFF' --iconBackgroundColorDark '#FFFFFF'
+
       - name: Patch Info.plist (register file associations)
         run: |
           # Strip CRLF in case the script was committed with Windows line endings

@@ -898,6 +898,41 @@ function closeSettings() {
   document.getElementById("settingsDialog").classList.remove("active");
 }
 
+/* ===== iOS external file receive (Capacitor "Open in" / share sheet) ===== */
+function initIOSFileReceive() {
+  if (typeof window.Capacitor === "undefined") return;
+  const App = window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if (!App) return;
+
+  if (typeof App.getLaunchUrl === "function") {
+    App.getLaunchUrl().then(res => { if (res && res.url) handleIncomingFileURL(res.url); }).catch(() => {});
+  }
+  if (typeof App.addListener === "function") {
+    App.addListener("appUrlOpen", (data) => { if (data && data.url) handleIncomingFileURL(data.url); });
+  }
+}
+
+async function handleIncomingFileURL(url) {
+  try {
+    if (!url) return;
+    if (!/^file:|^content:|^\//.test(url)) return;
+    let fileName = "received";
+    try { fileName = decodeURIComponent(url.split("?")[0].split("/").pop() || fileName); } catch (_) {}
+    const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
+      ? window.Capacitor.convertFileSrc(url) : url;
+    const resp = await fetch(webUrl);
+    if (!resp.ok) throw new Error("fetch failed " + resp.status);
+    const blob = await resp.blob();
+    const file = new File([blob], fileName, { type: blob.type || "application/octet-stream" });
+    if (typeof prepUpload === "function") {
+      prepUpload(file);
+    }
+  } catch (e) {
+    console.error("handleIncomingFileURL error:", e);
+    if (typeof toast === "function") toast(t("uploadErr"), "error");
+  }
+}
+
 /* ===== INIT ===== */
 window.addEventListener("DOMContentLoaded", async () => {
   await openDB();
@@ -906,6 +941,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initFeedback();
   initUpload();
   initBackgroundLock();
+  initIOSFileReceive();
   refreshFileList();
   
   updateSecuritySettingsUI();
