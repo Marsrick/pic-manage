@@ -397,6 +397,10 @@ function renderPage() {
     imgUnder.style.display = "none";
     pageUnder.appendChild(imgUnder);
 
+    const shadowOverlay = document.createElement("div");
+    shadowOverlay.className = "page-shadow-overlay";
+    shadowOverlay.id = "readerShadowOverlay";
+
     const pageActive = document.createElement("div");
     pageActive.className = "flip-page flip-active";
     
@@ -423,6 +427,7 @@ function renderPage() {
     pageActive.onclick = () => toggleControls();
 
     pageContainer.appendChild(pageUnder);
+    pageContainer.appendChild(shadowOverlay);
     pageContainer.appendChild(pageActive);
     pageContainer.appendChild(tapL);
     pageContainer.appendChild(tapR);
@@ -447,8 +452,9 @@ function animateFlip(dir) {
   const imgFront = document.querySelector(".flip-card-front img");
   const imgBack = document.querySelector(".flip-card-back img");
   const imgUnder = underPage?.querySelector("img");
+  const shadowOverlay = document.getElementById("readerShadowOverlay");
 
-  if (!activePage || !underPage || !cardInner || !imgFront || !imgBack || !imgUnder) {
+  if (!activePage || !underPage || !cardInner || !imgFront || !imgBack || !imgUnder || !shadowOverlay) {
     rPageIdx = next;
     updateProgress();
     renderPage();
@@ -457,7 +463,7 @@ function animateFlip(dir) {
   }
 
   if (dir === 1) {
-    // Flipping NEXT
+    // Flipping NEXT (Right-to-Left curl)
     const nextNext = rPageIdx + 2;
     if (nextNext < readerPages.length) {
       imgUnder.src = readerPages[nextNext];
@@ -469,25 +475,23 @@ function animateFlip(dir) {
     imgBack.src = readerPages[next];
     imgBack.style.display = "block";
 
-    cardInner.classList.add("flipped");
+    cardInner.className = "flip-card-inner flipping-next-anim";
+    shadowOverlay.className = "page-shadow-overlay active-next";
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
       
-      cardInner.style.transition = "none";
-      cardInner.classList.remove("flipped");
+      cardInner.className = "flip-card-inner";
       imgFront.src = readerPages[rPageIdx];
       imgBack.style.display = "none";
       imgUnder.style.display = "none";
-      
-      cardInner.offsetHeight; // Force reflow
-      cardInner.style.transition = "";
+      shadowOverlay.className = "page-shadow-overlay";
       
       isFlipping = false;
-    }, 600);
+    }, 700);
   } else {
-    // Flipping PREV
+    // Flipping PREV (Left-to-Right curl)
     imgUnder.src = readerPages[rPageIdx];
     imgUnder.style.display = "block";
 
@@ -496,22 +500,20 @@ function animateFlip(dir) {
 
     imgFront.src = readerPages[next];
 
-    cardInner.style.transition = "none";
-    cardInner.classList.add("flipped");
-    
-    cardInner.offsetHeight; // Force reflow
-
-    cardInner.style.transition = "";
-    cardInner.classList.remove("flipped");
+    cardInner.className = "flip-card-inner flipping-prev-anim";
+    shadowOverlay.className = "page-shadow-overlay active-prev";
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
       
+      cardInner.className = "flip-card-inner";
       imgBack.style.display = "none";
       imgUnder.style.display = "none";
+      shadowOverlay.className = "page-shadow-overlay";
+      
       isFlipping = false;
-    }, 600);
+    }, 700);
   }
 }
 
