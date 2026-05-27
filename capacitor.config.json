@@ -1,0 +1,6 @@
+{
+  "appId": "com.private.picmanage",
+  "appName": "PicManage",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}

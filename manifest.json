@@ -1,0 +1,42 @@
+{
+  "name": "PicManage",
+  "appid": "",
+  "description": "私密文件管理与漫画阅读器",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "launch_path": "index.html",
+  "developer": {
+    "name": "",
+    "email": "",
+    "url": ""
+  },
+  "permissions": {},
+  "plus": {
+    "useragent": {
+      "value": "picmanage-app",
+      "concatenate": true
+    },
+    "statusbar": {
+      "immersed": true
+    },
+    "splashscreen": {
+      "autoclose": true,
+      "waiting": false
+    },
+    "distribute": {
+      "apple": {
+        "appid": "com.private.picmanage",
+        "mobileprovision": "",
+        "password": "",
+        "certificate": "",
+        "devices": "universal"
+      },
+      "icons": {
+        "ios": {
+          "iphone": {},
+          "ipad": {}
+        }
+      }
+    }
+  }
+}

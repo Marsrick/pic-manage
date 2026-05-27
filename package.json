@@ -1,0 +1,21 @@
+{
+  "name": "pic-manage",
+  "version": "1.0.0",
+  "description": "私密文件管理与漫画阅读器",
+  "main": "app.js",
+  "scripts": {
+    "build": "node copy-assets.js",
+    "cap:sync": "npx cap sync",
+    "cap:add-ios": "npx cap add ios"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@capacitor/core": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/ios": "^6.0.0"
+  }
+}
