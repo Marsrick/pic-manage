@@ -899,37 +899,73 @@ function closeSettings() {
 }
 
 /* ===== iOS external file receive (Capacitor "Open in" / share sheet) ===== */
+// Legacy hook — Capacitor iOS bridge calls this directly when the app is
+// launched via a document URL. Works even without @capacitor/app plugin.
+window.handleOpenUrl = function (url) {
+  handleIncomingFileURL(url);
+};
+
+let __iosReceivedUrls = [];
+
 function initIOSFileReceive() {
-  if (typeof window.Capacitor === "undefined") return;
+  if (typeof window.Capacitor === "undefined") {
+    console.log("[ios-receive] Capacitor not present (running in browser)");
+    return;
+  }
+  console.log("[ios-receive] Capacitor present, plugins:", Object.keys(window.Capacitor.Plugins || {}));
   const App = window.Capacitor.Plugins && window.Capacitor.Plugins.App;
-  if (!App) return;
+  if (!App) {
+    console.warn("[ios-receive] @capacitor/app plugin not registered");
+    return;
+  }
 
   if (typeof App.getLaunchUrl === "function") {
-    App.getLaunchUrl().then(res => { if (res && res.url) handleIncomingFileURL(res.url); }).catch(() => {});
+    App.getLaunchUrl()
+      .then(res => {
+        console.log("[ios-receive] getLaunchUrl =>", res);
+        if (res && res.url) handleIncomingFileURL(res.url);
+      })
+      .catch(err => console.warn("[ios-receive] getLaunchUrl failed", err));
   }
   if (typeof App.addListener === "function") {
-    App.addListener("appUrlOpen", (data) => { if (data && data.url) handleIncomingFileURL(data.url); });
+    App.addListener("appUrlOpen", (data) => {
+      console.log("[ios-receive] appUrlOpen =>", data);
+      if (data && data.url) handleIncomingFileURL(data.url);
+    });
   }
 }
 
 async function handleIncomingFileURL(url) {
+  console.log("[ios-receive] handleIncomingFileURL:", url);
   try {
     if (!url) return;
-    if (!/^file:|^content:|^\//.test(url)) return;
+    if (__iosReceivedUrls.includes(url)) {
+      console.log("[ios-receive] already processed, skip");
+      return;
+    }
+    __iosReceivedUrls.push(url);
+
     let fileName = "received";
     try { fileName = decodeURIComponent(url.split("?")[0].split("/").pop() || fileName); } catch (_) {}
+    if (typeof toast === "function") toast("收到外部文件: " + fileName);
+
     const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
       ? window.Capacitor.convertFileSrc(url) : url;
+    console.log("[ios-receive] fetching:", webUrl);
     const resp = await fetch(webUrl);
     if (!resp.ok) throw new Error("fetch failed " + resp.status);
     const blob = await resp.blob();
+    console.log("[ios-receive] got blob size:", blob.size, "type:", blob.type);
+
     const file = new File([blob], fileName, { type: blob.type || "application/octet-stream" });
     if (typeof prepUpload === "function") {
       prepUpload(file);
+    } else {
+      console.error("[ios-receive] prepUpload not found");
     }
   } catch (e) {
-    console.error("handleIncomingFileURL error:", e);
-    if (typeof toast === "function") toast(t("uploadErr"), "error");
+    console.error("[ios-receive] handleIncomingFileURL error:", e);
+    if (typeof toast === "function") toast("接收文件失败: " + (e.message || e), "error");
   }
 }
 
