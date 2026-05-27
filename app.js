@@ -454,6 +454,7 @@ function closeGesture() {
   // If this was a background re-auth and user cancelled, stay in normal user mode
   if (backgroundReAuth) {
     backgroundReAuth = false;
+    sessionStorage.removeItem("isAdminActive");
     // Ensure UI is fully reset to normal user mode
     isAdmin = false;
     adminKey = null;
@@ -516,6 +517,7 @@ async function endDraw() {
       // Both match -> Enter normal user mode (public view)
       isStartupUnlock = false;
       backgroundReAuth = false;
+      sessionStorage.removeItem("isAdminActive");
       isAdmin = false;
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
@@ -535,6 +537,7 @@ async function endDraw() {
       // Normal matches -> Enter normal user mode
       isStartupUnlock = false;
       backgroundReAuth = false;
+      sessionStorage.removeItem("isAdminActive");
       isAdmin = false;
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
@@ -614,6 +617,7 @@ function forgetGesture() {
 /* ===== ADMIN MODE ===== */
 function enterAdmin() {
   isAdmin = true;
+  sessionStorage.setItem("isAdminActive", "true");
   document.getElementById("adminBadge").style.display = "flex";
   document.getElementById("logoutAdminBtn").style.display = "";
   switchNav("viewFiles", null);
@@ -622,6 +626,7 @@ function enterAdmin() {
 
 function logoutAdmin() {
   isAdmin = false; adminKey = null;
+  sessionStorage.removeItem("isAdminActive");
   document.getElementById("adminBadge").style.display = "none";
   document.getElementById("logoutAdminBtn").style.display = "none";
   switchNav("viewFiles", null);
@@ -634,9 +639,8 @@ let backgroundReAuth = false; // Flag: we are in re-authentication mode after ba
 
 function handleAppBackground() {
   if (isAdmin) {
-    sessionStorage.setItem("wasAdminBeforeBackground", "true");
-    isAdmin = false;
     adminKey = null;
+    isAdmin = false;
     document.getElementById("adminBadge").style.display = "none";
     document.getElementById("logoutAdminBtn").style.display = "none";
     refreshFileList();
@@ -649,12 +653,10 @@ function triggerBackgroundReAuth() {
     return;
   }
 
-  const wasAdmin = sessionStorage.getItem("wasAdminBeforeBackground") === "true";
+  const wasAdmin = sessionStorage.getItem("isAdminActive") === "true";
   const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
 
   if (wasAdmin || startupLock) {
-    sessionStorage.removeItem("wasAdminBeforeBackground"); // Clear immediately to prevent loop/double trigger
-    
     const adminHash = localStorage.getItem("g_hash");
     const normalHash = localStorage.getItem("g_normal_hash");
 
@@ -670,12 +672,10 @@ function triggerBackgroundReAuth() {
       switchNav("viewFiles", null);
       refreshFileList();
       
-      if (isAdmin) {
-        isAdmin = false;
-        adminKey = null;
-        document.getElementById("adminBadge").style.display = "none";
-        document.getElementById("logoutAdminBtn").style.display = "none";
-      }
+      isAdmin = false;
+      adminKey = null;
+      document.getElementById("adminBadge").style.display = "none";
+      document.getElementById("logoutAdminBtn").style.display = "none";
 
       openGesture();
     }
@@ -903,7 +903,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   
   updateSecuritySettingsUI();
 
-  const wasAdmin = sessionStorage.getItem("wasAdminBeforeBackground") === "true";
+  const wasAdmin = sessionStorage.getItem("isAdminActive") === "true";
   if (wasAdmin) {
     triggerBackgroundReAuth();
   } else {
