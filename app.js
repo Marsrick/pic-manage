@@ -617,7 +617,7 @@ function forgetGesture() {
 /* ===== ADMIN MODE ===== */
 function enterAdmin() {
   isAdmin = true;
-  sessionStorage.setItem("isAdminActive", "true");
+  localStorage.setItem("wasAdminBeforeBackground", "true");
   document.getElementById("adminBadge").style.display = "flex";
   document.getElementById("logoutAdminBtn").style.display = "";
   switchNav("viewFiles", null);
@@ -626,7 +626,7 @@ function enterAdmin() {
 
 function logoutAdmin() {
   isAdmin = false; adminKey = null;
-  sessionStorage.removeItem("isAdminActive");
+  localStorage.removeItem("wasAdminBeforeBackground");
   document.getElementById("adminBadge").style.display = "none";
   document.getElementById("logoutAdminBtn").style.display = "none";
   switchNav("viewFiles", null);
@@ -653,10 +653,13 @@ function triggerBackgroundReAuth() {
     return;
   }
 
-  const wasAdmin = sessionStorage.getItem("isAdminActive") === "true";
+  const wasAdmin = localStorage.getItem("wasAdminBeforeBackground") === "true";
   const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
 
   if (wasAdmin || startupLock) {
+    // Clear immediately to prevent double trigger on subsequent resume/pageshow events
+    localStorage.removeItem("wasAdminBeforeBackground");
+    
     const adminHash = localStorage.getItem("g_hash");
     const normalHash = localStorage.getItem("g_normal_hash");
 
@@ -708,11 +711,15 @@ function initUpload() {
   const zone = document.getElementById("uploadArea");
   const input = document.getElementById("fileInput");
 
-  zone.addEventListener("click", () => input.click());
-  zone.addEventListener("dragover", e => { e.preventDefault(); zone.style.borderColor = "var(--accent-blue)"; });
-  zone.addEventListener("dragleave", () => { zone.style.borderColor = ""; });
-  zone.addEventListener("drop", e => { e.preventDefault(); zone.style.borderColor = ""; if (e.dataTransfer.files[0]) prepUpload(e.dataTransfer.files[0]); });
-  input.addEventListener("change", e => { if (e.target.files[0]) prepUpload(e.target.files[0]); });
+  if (zone) {
+    zone.addEventListener("click", () => input.click());
+    zone.addEventListener("dragover", e => { e.preventDefault(); zone.style.borderColor = "var(--accent-blue)"; });
+    zone.addEventListener("dragleave", () => { zone.style.borderColor = ""; });
+    zone.addEventListener("drop", e => { e.preventDefault(); zone.style.borderColor = ""; if (e.dataTransfer.files[0]) prepUpload(e.dataTransfer.files[0]); });
+  }
+  if (input) {
+    input.addEventListener("change", e => { if (e.target.files[0]) prepUpload(e.target.files[0]); });
+  }
 }
 
 function prepUpload(file) {
