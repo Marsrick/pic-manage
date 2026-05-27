@@ -31,6 +31,13 @@ jobs:
           npx cap add ios
           npx cap sync ios
 
+      - name: Patch Info.plist (register file associations)
+        run: |
+          # Strip CRLF in case the script was committed with Windows line endings
+          sed -i.bak 's/\r$//' scripts/patch-ios-plist.sh && rm -f scripts/patch-ios-plist.sh.bak
+          chmod +x scripts/patch-ios-plist.sh
+          bash scripts/patch-ios-plist.sh
+
       - name: Build Xcode project
         run: |
           xcodebuild -workspace ios/App/App.xcworkspace \

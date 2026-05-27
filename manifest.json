@@ -29,7 +29,78 @@
         "mobileprovision": "",
         "password": "",
         "certificate": "",
-        "devices": "universal"
+        "devices": "universal",
+        "urltypes": [
+          {
+            "name": "com.private.picmanage",
+            "schemes": ["picmanage"]
+          }
+        ],
+        "documenttypes": [
+          {
+            "name": "Archive",
+            "extensions": ["zip", "cbz", "cbr", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"],
+            "mimetypes": ["application/zip", "application/x-zip-compressed", "application/x-rar-compressed", "application/x-7z-compressed", "application/x-tar", "application/gzip"],
+            "utis": ["public.zip-archive", "public.archive", "com.rarlab.rar-archive", "org.7-zip.7-zip-archive", "public.tar-archive", "org.gnu.gnu-zip-archive"],
+            "rank": "Owner",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "Image",
+            "extensions": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "heic", "heif", "svg", "ico"],
+            "mimetypes": ["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/tiff", "image/heic", "image/svg+xml"],
+            "utis": ["public.image", "public.jpeg", "public.png", "com.compuserve.gif", "org.webmproject.webp", "public.heic", "public.heif"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "PDF",
+            "extensions": ["pdf"],
+            "mimetypes": ["application/pdf"],
+            "utis": ["com.adobe.pdf"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "Word Document",
+            "extensions": ["doc", "docx", "rtf"],
+            "mimetypes": ["application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/rtf"],
+            "utis": ["com.microsoft.word.doc", "org.openxmlformats.wordprocessingml.document", "public.rtf"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "Excel Spreadsheet",
+            "extensions": ["xls", "xlsx", "csv"],
+            "mimetypes": ["application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"],
+            "utis": ["com.microsoft.excel.xls", "org.openxmlformats.spreadsheetml.sheet", "public.comma-separated-values-text"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "PowerPoint Presentation",
+            "extensions": ["ppt", "pptx"],
+            "mimetypes": ["application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+            "utis": ["com.microsoft.powerpoint.ppt", "org.openxmlformats.presentationml.presentation"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "Text",
+            "extensions": ["txt", "md", "log", "json", "xml", "html", "htm", "css", "js"],
+            "mimetypes": ["text/plain", "text/markdown", "application/json", "application/xml", "text/html"],
+            "utis": ["public.plain-text", "public.text", "net.daringfireball.markdown", "public.json", "public.xml", "public.html"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          },
+          {
+            "name": "All Files",
+            "extensions": ["*"],
+            "utis": ["public.data", "public.content", "public.item"],
+            "rank": "Alternate",
+            "iconFiles": ["logo.png"]
+          }
+        ]
       },
       "icons": {
         "ios": {
