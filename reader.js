@@ -399,10 +399,26 @@ function renderPage() {
 
     const pageActive = document.createElement("div");
     pageActive.className = "flip-page flip-active";
-    const imgActive = document.createElement("img");
-    imgActive.src = readerPages[rPageIdx];
-    imgActive.alt = `Page ${rPageIdx+1}`;
-    pageActive.appendChild(imgActive);
+    
+    const cardInner = document.createElement("div");
+    cardInner.className = "flip-card-inner";
+    
+    const cardFront = document.createElement("div");
+    cardFront.className = "flip-card-front";
+    const imgFront = document.createElement("img");
+    imgFront.src = readerPages[rPageIdx];
+    imgFront.alt = `Page ${rPageIdx+1}`;
+    cardFront.appendChild(imgFront);
+    
+    const cardBack = document.createElement("div");
+    cardBack.className = "flip-card-back";
+    const imgBack = document.createElement("img");
+    imgBack.style.display = "none";
+    cardBack.appendChild(imgBack);
+    
+    cardInner.appendChild(cardFront);
+    cardInner.appendChild(cardBack);
+    pageActive.appendChild(cardInner);
 
     pageActive.onclick = () => toggleControls();
 
@@ -427,8 +443,12 @@ function animateFlip(dir) {
   isFlipping = true;
   const activePage = document.querySelector(".flip-active");
   const underPage = document.querySelector(".flip-under");
-  
-  if (!activePage || !underPage) {
+  const cardInner = document.querySelector(".flip-card-inner");
+  const imgFront = document.querySelector(".flip-card-front img");
+  const imgBack = document.querySelector(".flip-card-back img");
+  const imgUnder = underPage?.querySelector("img");
+
+  if (!activePage || !underPage || !cardInner || !imgFront || !imgBack || !imgUnder) {
     rPageIdx = next;
     updateProgress();
     renderPage();
@@ -436,41 +456,62 @@ function animateFlip(dir) {
     return;
   }
 
-  const imgActive = activePage.querySelector("img");
-  const imgUnder = underPage.querySelector("img");
-
   if (dir === 1) {
-    imgUnder.src = readerPages[next];
-    imgUnder.style.display = "block";
-    activePage.classList.add("flipping-next");
+    // Flipping NEXT
+    const nextNext = rPageIdx + 2;
+    if (nextNext < readerPages.length) {
+      imgUnder.src = readerPages[nextNext];
+      imgUnder.style.display = "block";
+    } else {
+      imgUnder.style.display = "none";
+    }
+
+    imgBack.src = readerPages[next];
+    imgBack.style.display = "block";
+
+    cardInner.classList.add("flipped");
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
-      imgActive.src = readerPages[rPageIdx];
-      activePage.classList.remove("flipping-next");
+      
+      cardInner.style.transition = "none";
+      cardInner.classList.remove("flipped");
+      imgFront.src = readerPages[rPageIdx];
+      imgBack.style.display = "none";
       imgUnder.style.display = "none";
+      
+      cardInner.offsetHeight; // Force reflow
+      cardInner.style.transition = "";
+      
       isFlipping = false;
-    }, 450);
+    }, 600);
   } else {
+    // Flipping PREV
     imgUnder.src = readerPages[rPageIdx];
     imgUnder.style.display = "block";
+
+    imgBack.src = readerPages[rPageIdx];
+    imgBack.style.display = "block";
+
+    imgFront.src = readerPages[next];
+
+    cardInner.style.transition = "none";
+    cardInner.classList.add("flipped");
     
-    imgActive.src = readerPages[next];
-    activePage.classList.add("flipping-prev-start");
+    cardInner.offsetHeight; // Force reflow
 
-    activePage.offsetWidth; // Force Reflow
-
-    activePage.classList.remove("flipping-prev-start");
-    activePage.classList.add("flipping-prev-animate");
+    cardInner.style.transition = "";
+    cardInner.classList.remove("flipped");
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
-      activePage.classList.remove("flipping-prev-animate");
+      
+      imgBack.style.display = "none";
       imgUnder.style.display = "none";
       isFlipping = false;
-    }, 450);
+    }, 600);
   }
 }
 
