@@ -109,11 +109,45 @@ function isArchive(name) {
   return ["zip", "cbz", "7z", "tar", "gz", "tgz"].includes(ext);
 }
 
-async function extractAllImagesRecursive(name, arrayBuffer) {
-  const ext = name.split(".").pop().toLowerCase();
-  let images = [];
+function detectMagicType(arrayBuffer) {
+  const uint8 = new Uint8Array(arrayBuffer);
+  if (uint8.length >= 4 && uint8[0] === 0x50 && uint8[1] === 0x4B && uint8[2] === 0x03 && uint8[3] === 0x04) {
+    return "zip";
+  }
+  if (uint8.length >= 6 && uint8[0] === 0x37 && uint8[1] === 0x7A && uint8[2] === 0xBC && uint8[3] === 0xAF && uint8[4] === 0x27 && uint8[5] === 0x1C) {
+    return "7z";
+  }
+  if (uint8.length >= 2 && uint8[0] === 0x1F && uint8[1] === 0x8B) {
+    return "gzip";
+  }
+  if (uint8.length >= 262) {
+    const ustar = String.fromCharCode(...uint8.slice(257, 262));
+    if (ustar === "ustar") {
+      return "tar";
+    }
+  }
+  return null;
+}
 
-  if (ext === "zip" || ext === "cbz") {
+function isArchiveData(name, arrayBuffer) {
+  if (detectMagicType(arrayBuffer)) return true;
+  return isArchive(name);
+}
+
+async function extractAllImagesRecursive(name, arrayBuffer) {
+  let images = [];
+  const uint8 = new Uint8Array(arrayBuffer);
+  
+  let format = detectMagicType(arrayBuffer);
+  if (!format) {
+    const ext = name.split(".").pop().toLowerCase();
+    if (ext === "zip" || ext === "cbz") format = "zip";
+    else if (ext === "7z") format = "7z";
+    else if (ext === "tar") format = "tar";
+    else if (ext === "gz" || ext === "tgz") format = "gzip";
+  }
+
+  if (format === "zip") {
     const zip = await JSZip.loadAsync(arrayBuffer);
     const entries = [];
     zip.forEach((relPath, entry) => {
@@ -123,7 +157,7 @@ async function extractAllImagesRecursive(name, arrayBuffer) {
 
     for (const entry of entries) {
       const entryBuf = await entry.async("arraybuffer");
-      if (isArchive(entry.name)) {
+      if (isArchiveData(entry.name, entryBuf)) {
         const sub = await extractAllImagesRecursive(entry.name, entryBuf);
         images.push(...sub);
       } else {
@@ -133,31 +167,40 @@ async function extractAllImagesRecursive(name, arrayBuffer) {
         }
       }
     }
-  } else if (ext === "tar" || ext === "gz" || ext === "tgz") {
-    let uint8 = new Uint8Array(arrayBuffer);
-    if ((uint8[0] === 0x1f && uint8[1] === 0x8b) || ext === "gz" || ext === "tgz") {
+  } else if (format === "tar" || format === "gzip") {
+    let uint8Data = uint8;
+    if (format === "gzip") {
       try {
-        uint8 = pako.ungzip(uint8);
+        uint8Data = pako.ungzip(uint8);
       } catch (e) {
         console.error("pako ungzip failed", e);
       }
     }
-    const tarFiles = parseTar(uint8.buffer);
-    for (const file of tarFiles) {
-      if (isArchive(file.name)) {
-        const sub = await extractAllImagesRecursive(file.name, file.data.buffer);
-        images.push(...sub);
-      } else {
-        const fileExt = file.name.split(".").pop().toLowerCase();
-        if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
-          images.push({ name: file.name, data: new Blob([file.data]) });
+    const innerType = detectMagicType(uint8Data.buffer);
+    if (innerType === "tar" || name.toLowerCase().endsWith(".tar") || name.toLowerCase().endsWith(".tgz")) {
+      const tarFiles = parseTar(uint8Data.buffer);
+      for (const file of tarFiles) {
+        if (isArchiveData(file.name, file.data.buffer)) {
+          const sub = await extractAllImagesRecursive(file.name, file.data.buffer);
+          images.push(...sub);
+        } else {
+          const fileExt = file.name.split(".").pop().toLowerCase();
+          if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
+            images.push({ name: file.name, data: new Blob([file.data]) });
+          }
         }
       }
+    } else {
+      const cleanName = name.replace(/\.gz$/i, "");
+      const fileExt = cleanName.split(".").pop().toLowerCase();
+      if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
+        images.push({ name: cleanName, data: new Blob([uint8Data.buffer]) });
+      }
     }
-  } else if (ext === "7z") {
+  } else if (format === "7z") {
     const files = await extract7z(arrayBuffer);
     for (const file of files) {
-      if (isArchive(file.name)) {
+      if (isArchiveData(file.name, file.data.buffer)) {
         const sub = await extractAllImagesRecursive(file.name, file.data.buffer);
         images.push(...sub);
       } else {

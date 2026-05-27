@@ -810,8 +810,26 @@ async function openFileView(f) {
       blob = f.data;
     }
 
+    const headerBytes = new Uint8Array(await blob.slice(0, 262).arrayBuffer());
+    let isDetectedArchive = false;
+    if (headerBytes.length >= 4 && headerBytes[0] === 0x50 && headerBytes[1] === 0x4B && headerBytes[2] === 0x03 && headerBytes[3] === 0x04) {
+      isDetectedArchive = true;
+    } else if (headerBytes.length >= 6 && headerBytes[0] === 0x37 && headerBytes[1] === 0x7A && headerBytes[2] === 0xBC && headerBytes[3] === 0xAF && headerBytes[4] === 0x27 && headerBytes[5] === 0x1C) {
+      isDetectedArchive = true;
+    } else if (headerBytes.length >= 2 && headerBytes[0] === 0x1F && headerBytes[1] === 0x8B) {
+      isDetectedArchive = true;
+    } else if (headerBytes.length >= 262) {
+      const ustar = String.fromCharCode(...headerBytes.slice(257, 262));
+      if (ustar === "ustar") {
+        isDetectedArchive = true;
+      }
+    }
+
     const ext = getFileExt(f.name);
-    if (["zip", "cbz", "tar", "gz", "tgz", "7z"].includes(ext)) { openComicReader(blob, f.name); return; }
+    if (isDetectedArchive || ["zip", "cbz", "tar", "gz", "tgz", "7z"].includes(ext)) {
+      openComicReader(blob, f.name);
+      return;
+    }
 
     const modal = document.getElementById("previewModal");
     const content = document.getElementById("pvContent");
