@@ -1,6 +1,7 @@
 {
   "appId": "com.private.picmanage",
-  "appName": "PicManage",
+  "appName": "文档小助手",
   "webDir": "www",
   "bundledWebRuntime": false
 }
+

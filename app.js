@@ -1,7 +1,7 @@
 /* ===== I18N ===== */
 const T = {
   zh: {
-    myFiles: "我的文件", adminSpace: "管理员空间", adminMode: "管理员",
+    myFiles: "文档小助手", adminSpace: "管理员空间", adminMode: "管理员",
     searchPlaceholder: "搜索文件...",
     catAll: "全部", catDoc: "文档", catImage: "图片", catComic: "漫画", catOther: "其他",
     recentFiles: "最近文件", allFiles: "全部文件",
@@ -848,7 +848,7 @@ async function seedIfEmpty() {
   try {
     const zip = new JSZip();
     const pages = [
-      { title: "欢迎", body: "欢迎使用私密文件管理器" },
+      { title: "欢迎", body: "欢迎使用文档小助手" },
       { title: "翻页模式", body: "支持左右翻页 · 上下翻页 · 瀑布流" },
       { title: "感谢体验", body: "更多功能请探索管理员模式" }
     ];
