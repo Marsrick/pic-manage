@@ -1329,7 +1329,6 @@ html, body {
   height: 100%;
   max-width: 600px;
   max-height: 800px;
-  perspective: 2200px; /* Strong 3D depth */
 }
 
 .flip-page {
@@ -1361,51 +1360,91 @@ html, body {
   border-radius: 4px;
 }
 
-.flip-card-inner {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  transform-style: preserve-3d;
-  transform-origin: left center;
+/* Active page peel animations */
+.flip-active.peeling-next-anim {
+  animation: peelNextActive 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
-.flip-card-inner.flipping-next-anim {
-  animation: pageTurnNext 0.7s cubic-bezier(0.2, 0.8, 0.4, 1) forwards;
+.flip-active.peeling-prev-anim {
+  animation: peelPrevActive 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
-.flip-card-inner.flipping-prev-anim {
-  animation: pageTurnPrev 0.7s cubic-bezier(0.2, 0.8, 0.4, 1) forwards;
+@keyframes peelNextActive {
+  0% {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    clip-path: polygon(0 0, 0 0, 0 100%, 0 100%);
+    transform: translate3d(-30px, -15px, 0) scale(0.98);
+  }
 }
 
-.flip-card-front, .flip-card-back {
+@keyframes peelPrevActive {
+  0% {
+    clip-path: polygon(0 0, 0 0, 0 100%, 0 100%);
+    transform: translate3d(-30px, -15px, 0) scale(0.98);
+  }
+  100% {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+/* Diagonal Peeling Fold & Shadow */
+.peel-fold {
   position: absolute;
-  width: 100%;
-  height: 100%;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.flip-card-back {
-  transform: rotateY(180deg);
-}
-
-/* Paper page turn shadow gradient effect */
-.flip-card-inner::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.2) 100%);
-  opacity: 0;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(135deg, rgba(0,0,0,0) 35%, rgba(0,0,0,0.3) 42%, rgba(255,255,255,0.4) 47%, rgba(255,255,255,0.7) 48%, rgba(255,255,255,0) 49%, rgba(0,0,0,0.4) 50%, rgba(0,0,0,0) 65%);
+  transform: rotate(-30deg) translate3d(80%, 0, 0);
   pointer-events: none;
-  z-index: 5;
-  backface-visibility: hidden;
+  z-index: 12;
+  opacity: 0;
 }
 
-.flip-card-inner.flipping-next-anim::after {
-  animation: shadowFade 0.7s ease forwards;
+.peel-fold.active-next {
+  animation: foldSweepNext 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.peel-fold.active-prev {
+  animation: foldSweepPrev 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+@keyframes foldSweepNext {
+  0% {
+    opacity: 0;
+    transform: rotate(-30deg) translate3d(60%, 0, 0);
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(-30deg) translate3d(-60%, 0, 0);
+  }
+}
+
+@keyframes foldSweepPrev {
+  0% {
+    opacity: 0;
+    transform: rotate(-30deg) translate3d(-60%, 0, 0);
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(-30deg) translate3d(60%, 0, 0);
+  }
 }
 
 /* Page Shadow Overlay (Casting onto under page) */
@@ -1430,49 +1469,6 @@ html, body {
   35% { opacity: 0.8; }
   75% { opacity: 0.8; }
   100% { opacity: 0; }
-}
-
-/* Diagonal Curl 3D Animations (Simulates Right-Bottom Corner Peeling) */
-@keyframes pageTurnNext {
-  0% {
-    transform: rotateY(0deg) rotateZ(0deg) skewY(0deg) translateY(0px) scale(1);
-    box-shadow: 0 10px 35px rgba(0,0,0,0.6);
-  }
-  30% {
-    /* Bottom-right corner curls up, bending and warping the page */
-    transform: rotateY(-55deg) rotateZ(-8deg) skewY(5deg) translateY(-18px) scale(0.98);
-    box-shadow: 15px 25px 45px rgba(0,0,0,0.4);
-  }
-  70% {
-    /* Passed half, rolling over dynamically */
-    transform: rotateY(-125deg) rotateZ(-8deg) skewY(-5deg) translateY(-18px) scale(0.98);
-    box-shadow: -15px 25px 45px rgba(0,0,0,0.4);
-  }
-  100% {
-    transform: rotateY(-180deg) rotateZ(0deg) skewY(0deg) translateY(0px) scale(1);
-    box-shadow: 0 10px 35px rgba(0,0,0,0.6);
-  }
-}
-
-/* Symmetrical Backwards Diagonal Curl */
-@keyframes pageTurnPrev {
-  0% {
-    transform: rotateY(-180deg) rotateZ(0deg) skewY(0deg) translateY(0px) scale(1);
-    box-shadow: 0 10px 35px rgba(0,0,0,0.6);
-  }
-  30% {
-    /* Bottom-left corner curls up */
-    transform: rotateY(-125deg) rotateZ(8deg) skewY(-5deg) translateY(-18px) scale(0.98);
-    box-shadow: -15px 25px 45px rgba(0,0,0,0.4);
-  }
-  70% {
-    transform: rotateY(-55deg) rotateZ(8deg) skewY(5deg) translateY(-18px) scale(0.98);
-    box-shadow: 15px 25px 45px rgba(0,0,0,0.4);
-  }
-  100% {
-    transform: rotateY(0deg) rotateZ(0deg) skewY(0deg) translateY(0px) scale(1);
-    box-shadow: 0 10px 35px rgba(0,0,0,0.6);
-  }
 }
 
 /* ===== SECURITY SWITCH TOGGLE ===== */

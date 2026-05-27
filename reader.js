@@ -401,34 +401,23 @@ function renderPage() {
     shadowOverlay.className = "page-shadow-overlay";
     shadowOverlay.id = "readerShadowOverlay";
 
+    const peelFold = document.createElement("div");
+    peelFold.className = "peel-fold";
+    peelFold.id = "readerPeelFold";
+
     const pageActive = document.createElement("div");
     pageActive.className = "flip-page flip-active";
-    
-    const cardInner = document.createElement("div");
-    cardInner.className = "flip-card-inner";
-    
-    const cardFront = document.createElement("div");
-    cardFront.className = "flip-card-front";
-    const imgFront = document.createElement("img");
-    imgFront.src = readerPages[rPageIdx];
-    imgFront.alt = `Page ${rPageIdx+1}`;
-    cardFront.appendChild(imgFront);
-    
-    const cardBack = document.createElement("div");
-    cardBack.className = "flip-card-back";
-    const imgBack = document.createElement("img");
-    imgBack.style.display = "none";
-    cardBack.appendChild(imgBack);
-    
-    cardInner.appendChild(cardFront);
-    cardInner.appendChild(cardBack);
-    pageActive.appendChild(cardInner);
+    const imgActive = document.createElement("img");
+    imgActive.src = readerPages[rPageIdx];
+    imgActive.alt = `Page ${rPageIdx+1}`;
+    pageActive.appendChild(imgActive);
 
     pageActive.onclick = () => toggleControls();
 
     pageContainer.appendChild(pageUnder);
     pageContainer.appendChild(shadowOverlay);
     pageContainer.appendChild(pageActive);
+    pageContainer.appendChild(peelFold);
     pageContainer.appendChild(tapL);
     pageContainer.appendChild(tapR);
     wrap.appendChild(pageContainer);
@@ -448,13 +437,12 @@ function animateFlip(dir) {
   isFlipping = true;
   const activePage = document.querySelector(".flip-active");
   const underPage = document.querySelector(".flip-under");
-  const cardInner = document.querySelector(".flip-card-inner");
-  const imgFront = document.querySelector(".flip-card-front img");
-  const imgBack = document.querySelector(".flip-card-back img");
+  const imgActive = activePage?.querySelector("img");
   const imgUnder = underPage?.querySelector("img");
+  const peelFold = document.getElementById("readerPeelFold");
   const shadowOverlay = document.getElementById("readerShadowOverlay");
 
-  if (!activePage || !underPage || !cardInner || !imgFront || !imgBack || !imgUnder || !shadowOverlay) {
+  if (!activePage || !underPage || !imgActive || !imgUnder || !peelFold || !shadowOverlay) {
     rPageIdx = next;
     updateProgress();
     renderPage();
@@ -463,53 +451,44 @@ function animateFlip(dir) {
   }
 
   if (dir === 1) {
-    // Flipping NEXT (Right-to-Left curl)
-    const nextNext = rPageIdx + 2;
-    if (nextNext < readerPages.length) {
-      imgUnder.src = readerPages[nextNext];
-      imgUnder.style.display = "block";
-    } else {
-      imgUnder.style.display = "none";
-    }
+    // Flipping NEXT (Right-to-Left peel)
+    imgUnder.src = readerPages[next];
+    imgUnder.style.display = "block";
 
-    imgBack.src = readerPages[next];
-    imgBack.style.display = "block";
-
-    cardInner.className = "flip-card-inner flipping-next-anim";
+    activePage.className = "flip-page flip-active peeling-next-anim";
+    peelFold.className = "peel-fold active-next";
     shadowOverlay.className = "page-shadow-overlay active-next";
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
       
-      cardInner.className = "flip-card-inner";
-      imgFront.src = readerPages[rPageIdx];
-      imgBack.style.display = "none";
+      activePage.className = "flip-page flip-active";
+      imgActive.src = readerPages[rPageIdx];
       imgUnder.style.display = "none";
+      peelFold.className = "peel-fold";
       shadowOverlay.className = "page-shadow-overlay";
       
       isFlipping = false;
     }, 700);
   } else {
-    // Flipping PREV (Left-to-Right curl)
+    // Flipping PREV (Left-to-Right peel)
     imgUnder.src = readerPages[rPageIdx];
     imgUnder.style.display = "block";
 
-    imgBack.src = readerPages[rPageIdx];
-    imgBack.style.display = "block";
+    imgActive.src = readerPages[next];
 
-    imgFront.src = readerPages[next];
-
-    cardInner.className = "flip-card-inner flipping-prev-anim";
+    activePage.className = "flip-page flip-active peeling-prev-anim";
+    peelFold.className = "peel-fold active-prev";
     shadowOverlay.className = "page-shadow-overlay active-prev";
 
     setTimeout(() => {
       rPageIdx = next;
       updateProgress();
       
-      cardInner.className = "flip-card-inner";
-      imgBack.style.display = "none";
+      activePage.className = "flip-page flip-active";
       imgUnder.style.display = "none";
+      peelFold.className = "peel-fold";
       shadowOverlay.className = "page-shadow-overlay";
       
       isFlipping = false;
