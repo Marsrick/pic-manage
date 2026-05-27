@@ -629,88 +629,77 @@ function logoutAdmin() {
   toast(t("adminLogout"), "info");
 }
 
-/* ===== BACKGROUND LOCK (visibilitychange) ===== */
-let wasAdminBeforeBackground = false; // Track whether user was admin before backgrounding
+/* ===== BACKGROUND LOCK (visibilitychange, pause/resume, pagehide/pageshow) ===== */
 let backgroundReAuth = false; // Flag: we are in re-authentication mode after background resume
 
+function handleAppBackground() {
+  if (isAdmin) {
+    sessionStorage.setItem("wasAdminBeforeBackground", "true");
+    isAdmin = false;
+    adminKey = null;
+    document.getElementById("adminBadge").style.display = "none";
+    document.getElementById("logoutAdminBtn").style.display = "none";
+    refreshFileList();
+  }
+}
+
+function triggerBackgroundReAuth() {
+  // If gesture overlay is already active, don't trigger again
+  if (document.getElementById("gestureOverlay").classList.contains("active")) {
+    return;
+  }
+
+  const wasAdmin = sessionStorage.getItem("wasAdminBeforeBackground") === "true";
+  const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
+
+  if (wasAdmin || startupLock) {
+    sessionStorage.removeItem("wasAdminBeforeBackground"); // Clear immediately to prevent loop/double trigger
+    
+    const adminHash = localStorage.getItem("g_hash");
+    const normalHash = localStorage.getItem("g_normal_hash");
+
+    if (adminHash || normalHash) {
+      if (startupLock) {
+        isStartupUnlock = true;
+      } else {
+        backgroundReAuth = true;
+      }
+      toast(t("backgroundLock"), "info");
+
+      // Reset views first for safety
+      switchNav("viewFiles", null);
+      refreshFileList();
+      
+      if (isAdmin) {
+        isAdmin = false;
+        adminKey = null;
+        document.getElementById("adminBadge").style.display = "none";
+        document.getElementById("logoutAdminBtn").style.display = "none";
+      }
+
+      openGesture();
+    }
+  }
+}
+
 function initBackgroundLock() {
+  // Standard visibilitychange
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
-      if (isAdmin) {
-        wasAdminBeforeBackground = true;
-        isAdmin = false;
-        adminKey = null;
-        document.getElementById("adminBadge").style.display = "none";
-        document.getElementById("logoutAdminBtn").style.display = "none";
-      }
-    }
-
-    if (document.visibilityState === "visible") {
-      const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
-      if (wasAdminBeforeBackground || startupLock) {
-        wasAdminBeforeBackground = false;
-        
-        const adminHash = localStorage.getItem("g_hash");
-        const normalHash = localStorage.getItem("g_normal_hash");
-
-        if (adminHash || normalHash) {
-          if (startupLock) {
-            isStartupUnlock = true;
-          } else {
-            backgroundReAuth = true;
-          }
-          toast(t("backgroundLock"), "info");
-
-          // Reset views first for safety
-          switchNav("viewFiles", null);
-          refreshFileList();
-          
-          if (isAdmin) {
-            isAdmin = false;
-            adminKey = null;
-            document.getElementById("adminBadge").style.display = "none";
-            document.getElementById("logoutAdminBtn").style.display = "none";
-          }
-
-          openGesture();
-        }
-      }
+      handleAppBackground();
+    } else if (document.visibilityState === "visible") {
+      triggerBackgroundReAuth();
     }
   });
 
-  // iOS Safari sometimes fires pagehide instead of visibilitychange
-  window.addEventListener("pagehide", () => {
-    if (isAdmin) {
-      wasAdminBeforeBackground = true;
-      isAdmin = false;
-      adminKey = null;
-    }
-  });
+  // Cordova/Capacitor pause & resume events
+  document.addEventListener("pause", handleAppBackground);
+  document.addEventListener("resume", triggerBackgroundReAuth);
 
-  // iOS Safari pageshow (coming back from bfcache)
+  // iOS Safari pagehide & pageshow events
+  window.addEventListener("pagehide", handleAppBackground);
   window.addEventListener("pageshow", (e) => {
-    const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
-    if (e.persisted && (wasAdminBeforeBackground || startupLock)) {
-      wasAdminBeforeBackground = false;
-      const adminHash = localStorage.getItem("g_hash");
-      const normalHash = localStorage.getItem("g_normal_hash");
-      if (adminHash || normalHash) {
-        if (startupLock) {
-          isStartupUnlock = true;
-        } else {
-          backgroundReAuth = true;
-        }
-        toast(t("backgroundLock"), "info");
-        switchNav("viewFiles", null);
-        refreshFileList();
-        
-        isAdmin = false;
-        adminKey = null;
-        document.getElementById("adminBadge").style.display = "none";
-        document.getElementById("logoutAdminBtn").style.display = "none";
-        openGesture();
-      }
-    }
+    triggerBackgroundReAuth();
   });
 }
 
@@ -914,10 +903,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   
   updateSecuritySettingsUI();
 
-  const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
-  const normalHash = localStorage.getItem("g_normal_hash");
-  if (startupLock && normalHash) {
-    isStartupUnlock = true;
-    openGesture();
+  const wasAdmin = sessionStorage.getItem("wasAdminBeforeBackground") === "true";
+  if (wasAdmin) {
+    triggerBackgroundReAuth();
+  } else {
+    const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
+    const normalHash = localStorage.getItem("g_normal_hash");
+    if (startupLock && normalHash) {
+      isStartupUnlock = true;
+      openGesture();
+    }
   }
 });
