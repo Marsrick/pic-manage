@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const srcFiles = ['index.html', 'style.css', 'app.js', 'reader.js', '使用说明.md'];
+const srcFiles = ['index.html', 'style.css', 'app.js', 'reader.js', '使用说明.md', 'logo.png'];
 const srcDirs = ['lib'];
 const destDir = path.join(__dirname, 'www');
 
