@@ -41,7 +41,7 @@
   --radius-lg: 16px;
   --radius-xl: 20px;
 
-  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-top: var(--status-bar-height, env(safe-area-inset-top, 20px));
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
