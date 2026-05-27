@@ -118,7 +118,7 @@ function applyLang() {
   document.getElementById("langLabel").textContent = lang === "zh" ? "EN" : "中文";
 }
 
-function toggleLang() { lang = lang === "zh" ? "en" : "zh"; localStorage.setItem("pm_lang", lang); applyLang(); refreshFileList(); if (isAdmin) refreshVaultList(); }
+function toggleLang() { lang = lang === "zh" ? "en" : "zh"; localStorage.setItem("pm_lang", lang); applyLang(); refreshFileList(); }
 
 /* ===== DB ===== */
 function openDB() {
@@ -176,8 +176,6 @@ const navHistory = ["viewFiles"];
 function switchNav(viewId, btn, addToHistory = true) {
   document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
   document.getElementById(viewId)?.classList.add("active");
-  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
-  if (btn) btn.classList.add("active");
 
   const hdr = document.getElementById("headerTitle");
   const search = document.getElementById("searchBarWrap");
@@ -197,7 +195,7 @@ function switchNav(viewId, btn, addToHistory = true) {
   }
 
   // Update upload FAB visibility
-  if (viewId === "viewFiles" || viewId === "viewVault") {
+  if (viewId === "viewFiles") {
     if (fab) fab.style.display = "flex";
   } else {
     if (fab) fab.style.display = "none";
@@ -209,10 +207,6 @@ function switchNav(viewId, btn, addToHistory = true) {
   } else if (viewId === "viewFeedback") {
     hdr.textContent = t("feedbackTitle");
     search.style.display = "none"; cats.style.display = "none";
-  } else if (viewId === "viewVault") {
-    hdr.textContent = t("adminSpace");
-    search.style.display = "none"; cats.style.display = "none";
-    refreshVaultList();
   }
 }
 
@@ -220,10 +214,9 @@ function goBack() {
   if (navHistory.length > 1) {
     navHistory.pop(); // remove current
     const prevView = navHistory[navHistory.length - 1];
-    const btn = document.querySelector(`.nav-btn[data-view="${prevView}"]`);
-    switchNav(prevView, btn, false);
+    switchNav(prevView, null, false);
   } else {
-    switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'), false);
+    switchNav("viewFiles", null, false);
   }
 }
 
@@ -307,20 +300,7 @@ async function refreshFileList() {
       return;
     }
 
-    area.innerHTML = filtered.map(f => renderFileRow(f, false)).join("");
-    bindFileRowEvents(area);
-  } catch (e) { console.error(e); }
-}
-
-async function refreshVaultList() {
-  const area = document.getElementById("vaultFileList");
-  try {
-    const all = await dbAll();
-    if (all.length === 0) {
-      area.innerHTML = `<div class="empty-placeholder"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg><p>${t("emptyVault")}</p></div>`;
-      return;
-    }
-    area.innerHTML = all.map(f => renderFileRow(f, true)).join("");
+    area.innerHTML = filtered.map(f => renderFileRow(f, isAdmin)).join("");
     bindFileRowEvents(area);
   } catch (e) { console.error(e); }
 }
@@ -362,7 +342,7 @@ function bindFileRowEvents(area) {
     btn.addEventListener("click", async e => {
       e.stopPropagation();
       const id = Number(btn.closest(".file-row").dataset.id);
-      if (confirm(t("confirmDel"))) { await dbDel(id); toast(t("deleteOk"), "success"); refreshFileList(); refreshVaultList(); }
+      if (confirm(t("confirmDel"))) { await dbDel(id); toast(t("deleteOk"), "success"); refreshFileList(); }
     });
   });
   area.querySelectorAll(".file-row").forEach(row => {
@@ -479,9 +459,7 @@ function closeGesture() {
     adminKey = null;
     document.getElementById("adminBadge").style.display = "none";
     document.getElementById("logoutAdminBtn").style.display = "none";
-    document.getElementById("navVault").classList.add("hidden-nav");
-    document.getElementById("headerTitle").textContent = t("myFiles");
-    switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
+    switchNav("viewFiles", null);
     refreshFileList();
   }
 }
@@ -542,9 +520,7 @@ async function endDraw() {
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
       document.getElementById("logoutAdminBtn").style.display = "none";
-      document.getElementById("navVault").classList.add("hidden-nav");
-      document.getElementById("headerTitle").textContent = t("myFiles");
-      switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
+      switchNav("viewFiles", null);
       refreshFileList();
       toast(t("gestureUnlockOk"), "success");
       closeGesture();
@@ -563,9 +539,7 @@ async function endDraw() {
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
       document.getElementById("logoutAdminBtn").style.display = "none";
-      document.getElementById("navVault").classList.add("hidden-nav");
-      document.getElementById("headerTitle").textContent = t("myFiles");
-      switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
+      switchNav("viewFiles", null);
       refreshFileList();
       toast(t("gestureUnlockOk"), "success");
       closeGesture();
@@ -642,20 +616,15 @@ function enterAdmin() {
   isAdmin = true;
   document.getElementById("adminBadge").style.display = "flex";
   document.getElementById("logoutAdminBtn").style.display = "";
-  document.getElementById("navVault").classList.remove("hidden-nav");
-  document.getElementById("headerTitle").textContent = t("adminSpace");
-  switchNav("viewVault", document.getElementById("navVault"));
+  switchNav("viewFiles", null);
   refreshFileList();
-  refreshVaultList();
 }
 
 function logoutAdmin() {
   isAdmin = false; adminKey = null;
   document.getElementById("adminBadge").style.display = "none";
   document.getElementById("logoutAdminBtn").style.display = "none";
-  document.getElementById("navVault").classList.add("hidden-nav");
-  document.getElementById("headerTitle").textContent = t("myFiles");
-  switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
+  switchNav("viewFiles", null);
   refreshFileList();
   toast(t("adminLogout"), "info");
 }
@@ -673,7 +642,6 @@ function initBackgroundLock() {
         adminKey = null;
         document.getElementById("adminBadge").style.display = "none";
         document.getElementById("logoutAdminBtn").style.display = "none";
-        document.getElementById("navVault").classList.add("hidden-nav");
       }
     }
 
@@ -694,8 +662,7 @@ function initBackgroundLock() {
           toast(t("backgroundLock"), "info");
 
           // Reset views first for safety
-          switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
-          document.getElementById("headerTitle").textContent = t("myFiles");
+          switchNav("viewFiles", null);
           refreshFileList();
           
           if (isAdmin) {
@@ -703,7 +670,6 @@ function initBackgroundLock() {
             adminKey = null;
             document.getElementById("adminBadge").style.display = "none";
             document.getElementById("logoutAdminBtn").style.display = "none";
-            document.getElementById("navVault").classList.add("hidden-nav");
           }
 
           openGesture();
@@ -735,15 +701,13 @@ function initBackgroundLock() {
           backgroundReAuth = true;
         }
         toast(t("backgroundLock"), "info");
-        switchNav("viewFiles", document.querySelector('.nav-btn[data-view="viewFiles"]'));
-        document.getElementById("headerTitle").textContent = t("myFiles");
+        switchNav("viewFiles", null);
         refreshFileList();
         
         isAdmin = false;
         adminKey = null;
         document.getElementById("adminBadge").style.display = "none";
         document.getElementById("logoutAdminBtn").style.display = "none";
-        document.getElementById("navVault").classList.add("hidden-nav");
         openGesture();
       }
     }
@@ -793,7 +757,7 @@ async function saveFileAs(isPrivate) {
     await dbAdd({ name: pendingFile.name, size: pendingFile.size, type: pendingFile.type, isPrivate, uploadedAt: Date.now(), data });
     toast(t("uploadOk"), "success");
     pendingFile = null; document.getElementById("fileInput").value = "";
-    refreshFileList(); refreshVaultList();
+    refreshFileList();
   } catch (e) { console.error(e); toast(t("uploadErr"), "error"); }
 }
 

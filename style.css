@@ -282,7 +282,7 @@ html, body {
 .main-content {
   flex: 1;
   overflow-y: auto;
-  padding-bottom: calc(70px + var(--safe-bottom));
+  padding-bottom: calc(20px + var(--safe-bottom));
 }
 
 /* ===== VIEWS ===== */
@@ -432,58 +432,6 @@ html, body {
 .empty-placeholder svg { width: 48px; height: 48px; color: var(--text-muted); opacity: 0.4; }
 .empty-placeholder p { color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; }
 
-/* ===== BOTTOM NAV ===== */
-.bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-  max-width: 430px;
-  height: calc(60px + var(--safe-bottom));
-  padding-bottom: var(--safe-bottom);
-  background: rgba(12, 21, 41, 0.95);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-top: 1px solid var(--border-default);
-  display: flex;
-  z-index: 200;
-}
-
-.nav-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: var(--transition);
-  font-family: var(--font-family);
-  position: relative;
-}
-
-.nav-btn svg { width: 22px; height: 22px; transition: var(--transition); }
-.nav-btn span { font-size: 0.62rem; font-weight: 500; }
-
-.nav-btn.active { color: var(--accent-blue); }
-.nav-btn.active svg { filter: drop-shadow(0 0 6px rgba(59,130,246,0.4)); }
-
-.nav-btn.hidden-nav { display: none; }
-
-/* Feedback special button in nav (小圆点 hint) */
-.nav-btn .feedback-dot {
-  position: absolute;
-  top: 6px;
-  right: calc(50% - 16px);
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-red);
-}
 
 /* ===== FEEDBACK FORM ===== */
 .feedback-view { padding: 20px; }
@@ -1281,7 +1229,7 @@ html, body {
 /* ===== FLOATING ACTION UPLOAD BUTTON ===== */
 .fab-upload {
   position: absolute;
-  bottom: calc(75px + var(--safe-bottom));
+  bottom: calc(24px + var(--safe-bottom));
   right: 20px;
   width: 56px;
   height: 56px;

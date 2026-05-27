@@ -120,44 +120,10 @@
       </div>
     </div>
 
-    <!-- VIEW: VAULT (Admin only) -->
-    <div id="viewVault" class="view">
-      <div class="vault-banner">
-        <div class="vault-banner-icon">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
-        </div>
-        <div class="vault-banner-info">
-          <h4 data-i18n="vaultTitle">管理员空间</h4>
-          <p data-i18n="vaultDesc">AES-256 本地加密 · 离线存储</p>
-        </div>
-      </div>
-      <div class="upload-area" id="uploadArea">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/></svg>
-        <div class="upload-main-text" data-i18n="uploadText">点击或拖拽文件到此处导入</div>
-        <div class="upload-sub-text" data-i18n="uploadHint">支持图片、PDF、TXT 及 ZIP 漫画压缩包</div>
-      </div>
-      <input type="file" id="fileInput" class="hidden-input" accept=".zip,.png,.jpg,.jpeg,.gif,.webp,.txt,.pdf,.json,.doc,.docx">
-      <div class="encrypt-info-bar">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
-        <span data-i18n="encryptMode">加密方式：AES-256 本地加密</span>
-      </div>
-      <div class="file-section-title"><span data-i18n="allFiles">全部文件</span></div>
-      <div class="file-list" id="vaultFileList"></div>
-    </div>
+    <!-- Hidden File Input for Uploads -->
+    <input type="file" id="fileInput" class="hidden-input" accept=".zip,.png,.jpg,.jpeg,.gif,.webp,.txt,.pdf,.json,.doc,.docx">
 
   </main>
-
-  <!-- ===== BOTTOM NAVIGATION ===== -->
-  <nav class="bottom-nav" id="bottomNav">
-    <button class="nav-btn active" data-view="viewFiles" onclick="switchNav('viewFiles',this)">
-      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>
-      <span data-i18n="navFiles">文件</span>
-    </button>
-    <button class="nav-btn hidden-nav" id="navVault" data-view="viewVault" onclick="switchNav('viewVault',this)">
-      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
-      <span data-i18n="navVault">管理空间</span>
-    </button>
-  </nav>
 
   <!-- ===== FLOATING ACTION BUTTON ===== -->
   <button class="fab-upload" id="fabUpload" onclick="triggerUpload()" title="上传文件">
