@@ -10,6 +10,7 @@
   <script src="lib/jszip.min.js"></script>
   <script src="lib/pako.min.js"></script>
   <script src="lib/7zz.umd.js"></script>
+  <script src="lib/page-flip.browser.js"></script>
 </head>
 <body>
 <div class="app-shell">
@@ -248,6 +249,9 @@
     </button>
     <span class="reader-page-indicator" id="readerPageIndicator">01/01</span>
     <span class="reader-file-name" id="readerFileName"></span>
+    <button class="reader-menu-btn" onclick="toggleControls()" title="工具栏">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+    </button>
   </div>
 
   <!-- Sidebar backdrop (tap outside to close) -->

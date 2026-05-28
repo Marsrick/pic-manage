@@ -7,6 +7,7 @@ let rAutoPlaying = false;
 let rAutoTimer = null;
 let rAutoSpeed = 3;
 let isFlipping = false;
+let pageFlipInstance = null;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -257,6 +258,7 @@ async function openComicReader(zipBlob, name) {
 /* ===== CLOSE READER ===== */
 function closeReader() {
   stopAuto();
+  destroyPageFlip();
   readerPages.forEach(u => URL.revokeObjectURL(u));
   readerPages = [];
   document.getElementById("readerOverlay").classList.remove("active");
@@ -335,6 +337,7 @@ function preloadAdjacent() {
 /* ===== RENDER PAGE ===== */
 function renderPage() {
   const container = document.getElementById("readerCanvas");
+  destroyPageFlip();
   container.innerHTML = "";
 
   if (rMode === "click") {
@@ -382,93 +385,61 @@ function renderPage() {
     });
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
-    const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
-
-    const pageContainer = document.createElement("div");
-    pageContainer.className = "flip-book";
-
-    // Under page: the page that gets revealed/covered during the flip
-    const pageUnder = document.createElement("div");
-    pageUnder.className = "flip-page flip-under";
-    const imgUnder = document.createElement("img");
-    imgUnder.style.display = "none";
-    pageUnder.appendChild(imgUnder);
-
-    // Active page: the page that visually turns (only the image flips)
-    const pageActive = document.createElement("div");
-    pageActive.className = "flip-page flip-active";
-    const imgActive = document.createElement("img");
-    imgActive.src = readerPages[rPageIdx];
-    imgActive.alt = `Page ${rPageIdx+1}`;
-    const shade = document.createElement("div");
-    shade.className = "flip-shade";
-    pageActive.appendChild(imgActive);
-    pageActive.appendChild(shade);
-
-    const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
-    tapL.onclick = e => { e.stopPropagation(); animateFlip(-1); };
-    const tapR = document.createElement("div"); tapR.className = "r-tap-zone r-tap-right";
-    tapR.onclick = e => { e.stopPropagation(); animateFlip(1); };
-    const tapC = document.createElement("div"); tapC.className = "r-tap-zone r-tap-center";
-    tapC.onclick = e => { e.stopPropagation(); toggleControls(); };
-
-    pageContainer.appendChild(pageUnder);
-    pageContainer.appendChild(pageActive);
-    pageContainer.appendChild(tapL);
-    pageContainer.appendChild(tapC);
-    pageContainer.appendChild(tapR);
-    wrap.appendChild(pageContainer);
-    container.appendChild(wrap);
+    // Realistic page-curl using StPageFlip (global St.PageFlip)
+    const host = document.createElement("div");
+    host.className = "flip-host";
+    host.id = "flipHost";
+    container.appendChild(host);
+    // Defer until the host has a measured size
+    setTimeout(() => initPageFlip(host), 40);
   }
 }
 
-/* ===== ANIMATE FLIP (Simulation Page Turn — image only) ===== */
-const FLIP_MS = 560;
-function animateFlip(dir) {
-  if (isFlipping) return;
-  const next = rPageIdx + dir;
-  if (next < 0 || next >= readerPages.length) {
-    if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+/* ===== PAGE CURL (StPageFlip) ===== */
+function initPageFlip(host) {
+  if (typeof St === "undefined" || !St.PageFlip) {
+    console.warn("[reader] StPageFlip not loaded, falling back to click mode");
+    rMode = "click";
+    const sel = document.getElementById("rModeSelect"); if (sel) sel.value = "click";
+    renderPage();
     return;
   }
+  destroyPageFlip();
 
-  const activePage = document.querySelector(".flip-active");
-  const underPage = document.querySelector(".flip-under");
-  const imgActive = activePage?.querySelector("img");
-  const imgUnder = underPage?.querySelector("img");
+  const rect = host.getBoundingClientRect();
+  const w = Math.max(280, Math.floor(rect.width));
+  const h = Math.max(380, Math.floor(rect.height));
 
-  if (!activePage || !underPage || !imgActive || !imgUnder) {
-    rPageIdx = next; updateProgress(); renderPage(); return;
+  pageFlipInstance = new St.PageFlip(host, {
+    width: w,
+    height: h,
+    size: "stretch",
+    minWidth: 200, maxWidth: 2400,
+    minHeight: 280, maxHeight: 2400,
+    maxShadowOpacity: 0.5,
+    showCover: false,
+    usePortrait: true,          // single page with curl on phones
+    mobileScrollSupport: false,
+    drawShadow: true,
+    flippingTime: 700,
+    swipeDistance: 30,
+  });
+
+  pageFlipInstance.loadFromImages(readerPages.slice());
+
+  if (rPageIdx > 0) {
+    try { pageFlipInstance.turnToPage(rPageIdx); } catch (e) {}
   }
 
-  isFlipping = true;
+  pageFlipInstance.on("flip", (e) => {
+    if (typeof e.data === "number") { rPageIdx = e.data; updateProgress(); }
+  });
+}
 
-  if (dir === 1) {
-    // NEXT: current image turns away to the left, revealing the next page beneath
-    imgUnder.src = readerPages[next];
-    imgUnder.style.display = "block";
-    activePage.classList.add("flipping-next");
-    setTimeout(() => {
-      rPageIdx = next; updateProgress();
-      activePage.classList.remove("flipping-next");
-      imgActive.src = readerPages[rPageIdx];
-      imgUnder.style.display = "none";
-      isFlipping = false;
-    }, FLIP_MS);
-  } else {
-    // PREV: previous image turns in from the left, covering the current page
-    imgUnder.src = readerPages[rPageIdx];   // current page stays beneath
-    imgUnder.style.display = "block";
-    imgActive.src = readerPages[next];       // active page becomes the previous page
-    activePage.classList.add("flipping-prev-start");
-    void activePage.offsetWidth;             // force reflow so the start state applies
-    activePage.classList.add("flipping-prev");
-    setTimeout(() => {
-      rPageIdx = next; updateProgress();
-      activePage.classList.remove("flipping-prev-start", "flipping-prev");
-      imgUnder.style.display = "none";
-      isFlipping = false;
-    }, FLIP_MS);
+function destroyPageFlip() {
+  if (pageFlipInstance) {
+    try { pageFlipInstance.destroy(); } catch (e) {}
+    pageFlipInstance = null;
   }
 }
 
@@ -482,7 +453,8 @@ function initReaderGestures() {
   let sx = 0, sy = 0, st = 0, tracking = false;
 
   canvas.addEventListener("touchstart", (e) => {
-    if (rMode !== "click" && rMode !== "flip") { tracking = false; return; }
+    // Flip mode is handled by StPageFlip's own drag/curl; only click mode uses our swipe.
+    if (rMode !== "click") { tracking = false; return; }
     const tch = e.touches[0];
     sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true;
   }, { passive: true });
@@ -505,7 +477,13 @@ function initReaderGestures() {
 /* ===== PAGE NAVIGATION ===== */
 function flipPage(dir) {
   if (rMode === "flip") {
-    animateFlip(dir);
+    if (!pageFlipInstance) return;
+    if (dir === 1) {
+      if (rPageIdx >= readerPages.length - 1) { stopAuto(); toast(t("readerEnd"), "info"); return; }
+      pageFlipInstance.flipNext();
+    } else {
+      pageFlipInstance.flipPrev();
+    }
     return;
   }
   const next = rPageIdx + dir;
@@ -529,7 +507,7 @@ function jumpPage(idx) {
     const img = document.querySelector(".r-page-img-box img");
     if (img) img.src = readerPages[rPageIdx];
   } else if (rMode === "flip") {
-    renderPage();
+    if (pageFlipInstance) { try { pageFlipInstance.turnToPage(idx); } catch (e) {} }
   } else if (rMode === "slide") {
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;

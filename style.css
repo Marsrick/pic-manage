@@ -797,6 +797,18 @@ html, body {
   text-align: right;
 }
 
+.reader-menu-btn {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.9);
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.reader-menu-btn svg { width: 22px; height: 22px; }
+
 /* Reader Canvas */
 .reader-canvas { flex: 1; position: relative; overflow: hidden; }
 
@@ -1286,91 +1298,16 @@ html, body {
   background: #000;
 }
 
-.flip-book {
-  position: relative;
+/* Page-curl host (StPageFlip mounts its canvas/DOM here) */
+.flip-host {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  perspective: 2200px;
 }
-
-.flip-page {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  will-change: transform;
-}
-
-.flip-page.flip-active {
-  pointer-events: auto;
-  z-index: 10;
-}
-
-.flip-page.flip-under {
-  z-index: 1;
-}
-
-/* Only the image carries visible content; the page box itself is transparent,
-   so the page-turn animation appears to flip just the image, not a full sheet. */
-.flip-page img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  box-shadow: 0 10px 35px rgba(0,0,0,0.55);
-  border-radius: 3px;
-}
-
-/* Subtle shading that sweeps across the turning image for depth */
-.flip-shade {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(to right, rgba(0,0,0,0) 55%, rgba(0,0,0,0.45) 100%);
-}
-
-/* NEXT: turn current page away to the left around its left edge */
-.flip-active.flipping-next {
-  transform-origin: left center;
-  animation: pageFlipNext 0.56s cubic-bezier(0.46, 0.03, 0.52, 0.96) forwards;
-}
-.flip-active.flipping-next .flip-shade {
-  animation: shadeSweep 0.56s ease forwards;
-}
-@keyframes pageFlipNext {
-  0%   { transform: rotateY(0deg); }
-  100% { transform: rotateY(-176deg); }
-}
-
-/* PREV: bring previous page in from the left, settling flat */
-.flip-active.flipping-prev-start {
-  transform-origin: left center;
-  transform: rotateY(-176deg);
-}
-.flip-active.flipping-prev {
-  animation: pageFlipPrev 0.56s cubic-bezier(0.46, 0.03, 0.52, 0.96) forwards;
-}
-.flip-active.flipping-prev .flip-shade {
-  animation: shadeSweep 0.56s ease reverse forwards;
-}
-@keyframes pageFlipPrev {
-  0%   { transform: rotateY(-176deg); }
-  100% { transform: rotateY(0deg); }
-}
-
-@keyframes shadeSweep {
-  0%   { opacity: 0; }
-  40%  { opacity: 0.85; }
-  100% { opacity: 0; }
-}
+.flip-host .stf__parent { margin: 0 auto; }
+.flip-host img { max-width: 100%; }
 
 /* ===== SECURITY SWITCH TOGGLE ===== */
 .security-row {
