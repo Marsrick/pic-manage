@@ -530,6 +530,8 @@ function closeGesture() {
     document.getElementById("logoutAdminBtn").style.display = "none";
     switchNav("viewFiles", null);
     refreshFileList();
+    // User declined admin re-auth — proceed as normal user and drain queued files
+    markAppBootDone();
   }
 }
 
@@ -709,6 +711,11 @@ function logoutAdmin() {
 let backgroundReAuth = false; // Flag: we are in re-authentication mode after background resume
 
 function handleAppBackground() {
+  // Lock the external-file queue whenever the app loses foreground so
+  // that any URL delivered on the way back up (e.g. WeChat -> "Open with")
+  // waits for the re-auth flow to resolve before prepUpload runs.
+  appBootDone = false;
+
   if (isAdmin) {
     adminKey = null;
     isAdmin = false;
@@ -726,33 +733,36 @@ function triggerBackgroundReAuth() {
 
   const wasAdmin = localStorage.getItem("wasAdminBeforeBackground") === "true";
   const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
+  const adminHash = localStorage.getItem("g_hash");
+  const normalHash = localStorage.getItem("g_normal_hash");
 
-  if (wasAdmin || startupLock) {
+  const willPromptGesture = (wasAdmin || startupLock) && (adminHash || normalHash);
+
+  if (willPromptGesture) {
     // Clear immediately to prevent double trigger on subsequent resume/pageshow events
     localStorage.removeItem("wasAdminBeforeBackground");
-    
-    const adminHash = localStorage.getItem("g_hash");
-    const normalHash = localStorage.getItem("g_normal_hash");
 
-    if (adminHash || normalHash) {
-      if (startupLock) {
-        isStartupUnlock = true;
-      } else {
-        backgroundReAuth = true;
-      }
-      toast(t("backgroundLock"), "info");
-
-      // Reset views first for safety
-      switchNav("viewFiles", null);
-      refreshFileList();
-      
-      isAdmin = false;
-      adminKey = null;
-      document.getElementById("adminBadge").style.display = "none";
-      document.getElementById("logoutAdminBtn").style.display = "none";
-
-      openGesture();
+    if (startupLock) {
+      isStartupUnlock = true;
+    } else {
+      backgroundReAuth = true;
     }
+    toast(t("backgroundLock"), "info");
+
+    // Reset views first for safety
+    switchNav("viewFiles", null);
+    refreshFileList();
+
+    isAdmin = false;
+    adminKey = null;
+    document.getElementById("adminBadge").style.display = "none";
+    document.getElementById("logoutAdminBtn").style.display = "none";
+
+    openGesture();
+    // markAppBootDone will run from the gesture-success handler
+  } else {
+    // No re-auth required — release the external-file queue immediately.
+    markAppBootDone();
   }
 }
 
