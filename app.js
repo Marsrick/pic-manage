@@ -101,6 +101,11 @@ let currentFilter = "all";
 let pendingFile = null;
 let isSettingNormalGesture = false;
 let isStartupUnlock = false;
+let multiSelectMode = false;
+const multiSelectIds = new Set();
+let actionMenuTargetId = null;
+const pendingExternalUrls = [];
+let appBootDone = false;
 
 const DB = "PicManageDB";
 const STORE = "files";
@@ -247,10 +252,65 @@ function getFileCat(name) {
   const ext = getFileExt(name);
   if (["pdf","doc","docx","xls","xlsx","ppt","pptx"].includes(ext)) return "doc";
   if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) return "image";
-  if (ext === "zip" || ext === "cbz" || ext === "7z" || ext === "tar") return "comic";
-  if (["txt","json","xml","js","html","css","md"].includes(ext)) return "doc";
+  if (ext === "zip" || ext === "cbz" || ext === "cbr" || ext === "7z" || ext === "tar" || ext === "rar") return "comic";
+  if (["txt","json","xml","js","html","css","md","log"].includes(ext)) return "doc";
   return "other";
 }
+
+/* ===== FORMAT DETECTION (magic bytes) ===== */
+function detectMagicFormat(uint8) {
+  if (!uint8 || uint8.length < 4) return "unknown";
+  // ZIP / docx / xlsx / pptx / cbz
+  if (uint8[0] === 0x50 && uint8[1] === 0x4B && (uint8[2] === 0x03 || uint8[2] === 0x05 || uint8[2] === 0x07)) return "zip";
+  // 7z
+  if (uint8.length >= 6 && uint8[0] === 0x37 && uint8[1] === 0x7A && uint8[2] === 0xBC && uint8[3] === 0xAF && uint8[4] === 0x27 && uint8[5] === 0x1C) return "7z";
+  // RAR v5 (Rar!\x1a\x07\x01\x00) or v4 (Rar!\x1a\x07\x00)
+  if (uint8.length >= 7 && uint8[0] === 0x52 && uint8[1] === 0x61 && uint8[2] === 0x72 && uint8[3] === 0x21 && uint8[4] === 0x1A && uint8[5] === 0x07) return "rar";
+  // gzip
+  if (uint8[0] === 0x1F && uint8[1] === 0x8B) return "gzip";
+  // PDF
+  if (uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46) return "pdf";
+  // PNG
+  if (uint8.length >= 8 && uint8[0] === 0x89 && uint8[1] === 0x50 && uint8[2] === 0x4E && uint8[3] === 0x47 && uint8[4] === 0x0D && uint8[5] === 0x0A && uint8[6] === 0x1A && uint8[7] === 0x0A) return "png";
+  // JPEG
+  if (uint8.length >= 3 && uint8[0] === 0xFF && uint8[1] === 0xD8 && uint8[2] === 0xFF) return "jpeg";
+  // GIF
+  if (uint8.length >= 6 && uint8[0] === 0x47 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x38) return "gif";
+  // WEBP (RIFF....WEBP)
+  if (uint8.length >= 12 && uint8[0] === 0x52 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x46 && uint8[8] === 0x57 && uint8[9] === 0x45 && uint8[10] === 0x42 && uint8[11] === 0x50) return "webp";
+  // BMP
+  if (uint8[0] === 0x42 && uint8[1] === 0x4D) return "bmp";
+  // Legacy MS Office (.doc/.xls/.ppt) — OLE compound
+  if (uint8.length >= 8 && uint8[0] === 0xD0 && uint8[1] === 0xCF && uint8[2] === 0x11 && uint8[3] === 0xE0 && uint8[4] === 0xA1 && uint8[5] === 0xB1 && uint8[6] === 0x1A && uint8[7] === 0xE1) return "msoffice-legacy";
+  // tar (ustar marker at offset 257)
+  if (uint8.length >= 262 && uint8[257] === 0x75 && uint8[258] === 0x73 && uint8[259] === 0x74 && uint8[260] === 0x61 && uint8[261] === 0x72) return "tar";
+  return "unknown";
+}
+
+function isLikelyText(uint8) {
+  if (!uint8 || uint8.length === 0) return false;
+  // UTF-8 BOM
+  if (uint8.length >= 3 && uint8[0] === 0xEF && uint8[1] === 0xBB && uint8[2] === 0xBF) return true;
+  const sampleLen = Math.min(uint8.length, 512);
+  let printable = 0, control = 0;
+  for (let i = 0; i < sampleLen; i++) {
+    const b = uint8[i];
+    if (b === 0) return false; // NUL is a strong signal of binary
+    if ((b >= 0x20 && b <= 0x7E) || b === 0x09 || b === 0x0A || b === 0x0D) printable++;
+    else if (b >= 0x80) printable++; // UTF-8 multi-byte (rough heuristic)
+    else control++;
+  }
+  return printable / sampleLen > 0.9;
+}
+
+async function probeBlobFormat(blob) {
+  const head = new Uint8Array(await blob.slice(0, 512).arrayBuffer());
+  const fmt = detectMagicFormat(head);
+  return { fmt, isText: fmt === "unknown" && isLikelyText(head) };
+}
+
+function isArchiveFormat(fmt) { return ["zip", "7z", "gzip", "tar", "rar"].includes(fmt); }
+function isImageFormat(fmt) { return ["png", "jpeg", "gif", "webp", "bmp"].includes(fmt); }
 
 function getIconClass(name) {
   const cat = getFileCat(name);
@@ -306,12 +366,16 @@ async function refreshFileList() {
 }
 
 function renderFileRow(f, showLock) {
-  const ext = getFileExt(f.name);
   const iconCls = getIconClass(f.name);
   const lockBadge = (showLock && f.isPrivate) ? `<div class="file-lock-badge"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75"/></svg></div>` : "";
+  const selected = multiSelectIds.has(f.id) ? " selected" : "";
+  const checkboxHtml = multiSelectMode
+    ? `<div class="file-checkbox${multiSelectIds.has(f.id) ? " checked" : ""}"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg></div>`
+    : "";
 
   return `
-    <div class="file-row" data-id="${f.id}" data-name="${f.name}">
+    <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}">
+      ${checkboxHtml}
       <div class="file-icon-wrap ${iconCls}">${getIconSVG(f.name)}${lockBadge}</div>
       <div class="file-info">
         <div class="file-name">${f.name}</div>
@@ -322,7 +386,7 @@ function renderFileRow(f, showLock) {
       </div>
       <div class="file-row-actions">
         <button class="file-action-btn view-btn" title="查看"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>
-        ${isAdmin ? `<button class="file-action-btn danger del-btn" title="删除"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg></button>` : ""}
+        <button class="file-action-btn more-btn" title="更多"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg></button>
       </div>
     </div>`;
 }
@@ -338,16 +402,20 @@ function bindFileRowEvents(area) {
       if (f) openFileView(f);
     });
   });
-  area.querySelectorAll(".del-btn").forEach(btn => {
+  area.querySelectorAll(".more-btn").forEach(btn => {
     btn.addEventListener("click", async e => {
       e.stopPropagation();
       const id = Number(btn.closest(".file-row").dataset.id);
-      if (confirm(t("confirmDel"))) { await dbDel(id); toast(t("deleteOk"), "success"); refreshFileList(); }
+      openActionMenu(id);
     });
   });
   area.querySelectorAll(".file-row").forEach(row => {
     row.addEventListener("click", async () => {
       const id = Number(row.dataset.id);
+      if (multiSelectMode) {
+        toggleSelection(id);
+        return;
+      }
       const all = await dbAll();
       const f = all.find(x => x.id === id);
       if (f) openFileView(f);
@@ -526,6 +594,7 @@ async function endDraw() {
       refreshFileList();
       toast(t("gestureUnlockOk"), "success");
       closeGesture();
+      markAppBootDone();
     } else if (matchedAdmin) {
       // Admin matches -> Enter admin mode
       isStartupUnlock = false;
@@ -546,6 +615,7 @@ async function endDraw() {
       refreshFileList();
       toast(t("gestureUnlockOk"), "success");
       closeGesture();
+      markAppBootDone();
     } else {
       if (backgroundReAuth || isStartupUnlock) {
         if (isStartupUnlock) {
@@ -622,6 +692,7 @@ function enterAdmin() {
   document.getElementById("logoutAdminBtn").style.display = "";
   switchNav("viewFiles", null);
   refreshFileList();
+  markAppBootDone();
 }
 
 function logoutAdmin() {
@@ -723,7 +794,7 @@ function initUpload() {
 }
 
 function prepUpload(file) {
-  if (file.size > 50 * 1024 * 1024) { toast(t("fileTooLarge"), "error"); return; }
+  if (file.size > 500 * 1024 * 1024) { toast(t("fileTooLarge"), "error"); return; }
   pendingFile = file;
   if (isAdmin) {
     document.getElementById("choiceDialog").classList.add("active");
@@ -757,6 +828,297 @@ async function saveFileAs(isPrivate) {
   } catch (e) { console.error(e); toast(t("uploadErr"), "error"); }
 }
 
+async function dbGet(id) {
+  const all = await dbAll();
+  return all.find(x => x.id === id);
+}
+
+function dbPut(obj) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(obj).onsuccess = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
+/* ===== ACTION MENU ===== */
+function openActionMenu(id) {
+  actionMenuTargetId = id;
+  dbGet(id).then(f => {
+    if (!f) return;
+    const menu = document.getElementById("actionMenu");
+    const ext = getFileExt(f.name);
+    const probableArchive = ["zip","cbz","cbr","7z","tar","gz","tgz","rar","log"].includes(ext);
+    menu.querySelector('[data-act="extract"]').style.display = probableArchive ? "" : "none";
+    menu.querySelector('[data-act="extract"]').textContent =
+      (isAdmin || ["zip","cbz","cbr","7z","tar","gz","tgz","rar"].includes(ext)) ? "解压" : "解压（管理员）";
+    menu.classList.add("active");
+  });
+}
+
+function closeActionMenu() {
+  document.getElementById("actionMenu").classList.remove("active");
+  actionMenuTargetId = null;
+}
+
+async function handleActionClick(act) {
+  const id = actionMenuTargetId;
+  closeActionMenu();
+  if (!id) return;
+  if (act === "rename") openRenameDialog(id);
+  else if (act === "delete") {
+    if (confirm(t("confirmDel"))) {
+      await dbDel(id);
+      toast(t("deleteOk"), "success");
+      refreshFileList();
+    }
+  } else if (act === "extract") {
+    extractFileById(id);
+  }
+}
+
+/* ===== RENAME ===== */
+function openRenameDialog(id) {
+  dbGet(id).then(f => {
+    if (!f) return;
+    const input = document.getElementById("renameInput");
+    input.value = f.name;
+    input.dataset.id = String(id);
+    document.getElementById("renameDialog").classList.add("active");
+    setTimeout(() => input.focus(), 100);
+  });
+}
+
+function closeRename() {
+  document.getElementById("renameDialog").classList.remove("active");
+}
+
+async function confirmRename() {
+  const input = document.getElementById("renameInput");
+  const id = Number(input.dataset.id);
+  const newName = input.value.trim();
+  if (!newName) { toast("名称不能为空", "error"); return; }
+  const f = await dbGet(id);
+  if (!f) return;
+  f.name = newName;
+  await dbPut(f);
+  closeRename();
+  toast("已重命名", "success");
+  refreshFileList();
+}
+
+/* ===== EXTRACT (archive → individual files) ===== */
+async function extractFileById(id) {
+  const f = await dbGet(id);
+  if (!f) return;
+
+  // Decrypt if private
+  let blob;
+  if (f.isPrivate) {
+    if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
+    try {
+      const dec = await decryptBuf(await f.data.arrayBuffer(), adminKey);
+      blob = new Blob([dec]);
+    } catch (e) { toast(t("decryptErr"), "error"); return; }
+  } else {
+    blob = f.data;
+  }
+
+  const { fmt } = await probeBlobFormat(blob);
+  if (!isArchiveFormat(fmt) && !["zip","cbz","cbr","7z","tar","gz","tgz","rar"].includes(getFileExt(f.name))) {
+    toast("此文件不是压缩包", "info");
+    return;
+  }
+  // Mismatched extension → admin required
+  const declaredArchive = ["zip","cbz","cbr","7z","tar","gz","tgz","rar"].includes(getFileExt(f.name));
+  if (!declaredArchive && !isAdmin) {
+    toast("解压伪装文件需管理员权限", "error");
+    return;
+  }
+
+  toast("正在解压...", "info");
+  try {
+    if (typeof extractAllImagesRecursive !== "function") {
+      throw new Error("解压模块未加载");
+    }
+    // Use the existing recursive extractor — returns image blobs.
+    // For non-image archive members we re-walk via the raw extractors below.
+    const buf = await blob.arrayBuffer();
+    const entries = await extractAllFilesRecursive(f.name, buf);
+    if (!entries.length) { toast("压缩包为空或无法解析", "error"); return; }
+
+    const baseName = f.name.replace(/\.[^.]+$/, "");
+    let added = 0;
+    for (const e of entries) {
+      const name = `${baseName}/${e.name}`;
+      const entryBlob = new Blob([e.data]);
+      let stored = entryBlob;
+      if (f.isPrivate) {
+        const enc = await encryptBuf(await entryBlob.arrayBuffer(), adminKey);
+        stored = new Blob([enc]);
+      }
+      await dbAdd({
+        name,
+        size: entryBlob.size,
+        type: "",
+        isPrivate: !!f.isPrivate,
+        uploadedAt: Date.now(),
+        data: stored
+      });
+      added++;
+    }
+    toast(`已解压 ${added} 个文件`, "success");
+    refreshFileList();
+  } catch (e) {
+    console.error("[extract] error:", e);
+    toast("解压失败: " + (e.message || e), "error");
+  }
+}
+
+// All-files variant of extractAllImagesRecursive (defined in reader.js).
+// Returns every file (not just images), recursively unwrapping archives.
+async function extractAllFilesRecursive(name, arrayBuffer) {
+  const out = [];
+  let format = (typeof detectMagicType === "function") ? detectMagicType(arrayBuffer) : null;
+  if (!format) {
+    const ext = name.split(".").pop().toLowerCase();
+    if (["zip","cbz","cbr"].includes(ext)) format = "zip";
+    else if (ext === "7z") format = "7z";
+    else if (ext === "tar") format = "tar";
+    else if (ext === "gz" || ext === "tgz") format = "gzip";
+  }
+  // Also try our own detection
+  if (!format) {
+    const head = new Uint8Array(arrayBuffer.slice(0, 512));
+    const detected = detectMagicFormat(head);
+    if (isArchiveFormat(detected)) format = detected;
+  }
+
+  if (format === "zip") {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const entries = [];
+    zip.forEach((relPath, entry) => {
+      if (entry.dir || relPath.startsWith("__MACOSX") || relPath.startsWith(".")) return;
+      entries.push(entry);
+    });
+    for (const entry of entries) {
+      const entryBuf = await entry.async("arraybuffer");
+      const inner = detectMagicFormat(new Uint8Array(entryBuf.slice(0, 512)));
+      if (isArchiveFormat(inner)) {
+        const sub = await extractAllFilesRecursive(entry.name, entryBuf);
+        out.push(...sub);
+      } else {
+        out.push({ name: entry.name, data: new Uint8Array(entryBuf) });
+      }
+    }
+  } else if (format === "7z") {
+    const files = await extract7z(arrayBuffer);
+    for (const file of files) {
+      const inner = detectMagicFormat(file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data.buffer));
+      if (isArchiveFormat(inner)) {
+        const buf = (file.data instanceof Uint8Array) ? file.data.buffer.slice(file.data.byteOffset, file.data.byteOffset + file.data.byteLength) : file.data.buffer;
+        const sub = await extractAllFilesRecursive(file.name, buf);
+        out.push(...sub);
+      } else {
+        out.push({ name: file.name, data: file.data });
+      }
+    }
+  } else if (format === "gzip") {
+    const uint8 = new Uint8Array(arrayBuffer);
+    const decompressed = pako.ungzip(uint8);
+    const inner = detectMagicFormat(decompressed);
+    if (inner === "tar" || name.toLowerCase().endsWith(".tar.gz") || name.toLowerCase().endsWith(".tgz")) {
+      const sub = await extractAllFilesRecursive(name.replace(/\.gz$|\.tgz$/i, ".tar"), decompressed.buffer);
+      out.push(...sub);
+    } else {
+      out.push({ name: name.replace(/\.gz$/i, ""), data: decompressed });
+    }
+  } else if (format === "tar") {
+    const tarFiles = parseTar(arrayBuffer);
+    for (const file of tarFiles) {
+      const inner = detectMagicFormat(file.data);
+      if (isArchiveFormat(inner)) {
+        const buf = file.data.buffer.slice(file.data.byteOffset, file.data.byteOffset + file.data.byteLength);
+        const sub = await extractAllFilesRecursive(file.name, buf);
+        out.push(...sub);
+      } else {
+        out.push({ name: file.name, data: file.data });
+      }
+    }
+  }
+  return out;
+}
+
+/* ===== MULTI-SELECT + COMPRESS ===== */
+function toggleMultiSelect() {
+  multiSelectMode = !multiSelectMode;
+  multiSelectIds.clear();
+  document.getElementById("multiSelectBtn")?.classList.toggle("active", multiSelectMode);
+  document.getElementById("fabCompress").style.display = multiSelectMode ? "flex" : "none";
+  document.getElementById("multiSelectBar").style.display = multiSelectMode ? "flex" : "none";
+  // Hide upload FAB while multi-selecting
+  const fab = document.getElementById("fabUpload");
+  if (fab) fab.style.display = multiSelectMode ? "none" : "flex";
+  refreshFileList();
+}
+
+function toggleSelection(id) {
+  if (multiSelectIds.has(id)) multiSelectIds.delete(id);
+  else multiSelectIds.add(id);
+  refreshFileList();
+  document.getElementById("multiSelectCount").textContent = String(multiSelectIds.size);
+}
+
+async function compressSelected() {
+  if (multiSelectIds.size === 0) { toast("请先选择文件", "info"); return; }
+  const name = prompt("压缩包名称：", `archive-${Date.now()}.zip`);
+  if (!name) return;
+
+  toast("正在压缩...", "info");
+  try {
+    const zip = new JSZip();
+    const all = await dbAll();
+    for (const id of multiSelectIds) {
+      const f = all.find(x => x.id === id);
+      if (!f) continue;
+      let blob = f.data;
+      if (f.isPrivate) {
+        if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
+        const dec = await decryptBuf(await blob.arrayBuffer(), adminKey);
+        blob = new Blob([dec]);
+      }
+      zip.file(f.name, blob);
+    }
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+
+    // Save the resulting zip into DB
+    const finalName = /\.zip$/i.test(name) ? name : (name + ".zip");
+    let stored = zipBlob;
+    let priv = false;
+    if (isAdmin && adminKey) {
+      // Ask whether to encrypt the resulting zip
+      priv = confirm("将压缩结果保存为加密文件？(确定=加密 / 取消=公开)");
+      if (priv) {
+        const enc = await encryptBuf(await zipBlob.arrayBuffer(), adminKey);
+        stored = new Blob([enc]);
+      }
+    }
+    await dbAdd({
+      name: finalName,
+      size: zipBlob.size,
+      type: "application/zip",
+      isPrivate: priv,
+      uploadedAt: Date.now(),
+      data: stored
+    });
+    toast(`已压缩 ${multiSelectIds.size} 个文件为 ${finalName}`, "success");
+    toggleMultiSelect();
+  } catch (e) {
+    console.error("[compress] error:", e);
+    toast("压缩失败: " + (e.message || e), "error");
+  }
+}
+
 /* ===== FILE VIEW ===== */
 async function openFileView(f) {
   try {
@@ -770,25 +1132,20 @@ async function openFileView(f) {
       blob = f.data;
     }
 
-    const headerBytes = new Uint8Array(await blob.slice(0, 262).arrayBuffer());
-    let isDetectedArchive = false;
-    if (headerBytes.length >= 4 && headerBytes[0] === 0x50 && headerBytes[1] === 0x4B && headerBytes[2] === 0x03 && headerBytes[3] === 0x04) {
-      isDetectedArchive = true;
-    } else if (headerBytes.length >= 6 && headerBytes[0] === 0x37 && headerBytes[1] === 0x7A && headerBytes[2] === 0xBC && headerBytes[3] === 0xAF && headerBytes[4] === 0x27 && headerBytes[5] === 0x1C) {
-      isDetectedArchive = true;
-    } else if (headerBytes.length >= 2 && headerBytes[0] === 0x1F && headerBytes[1] === 0x8B) {
-      isDetectedArchive = true;
-    } else if (headerBytes.length >= 262) {
-      const ustar = String.fromCharCode(...headerBytes.slice(257, 262));
-      if (ustar === "ustar") {
-        isDetectedArchive = true;
-      }
-    }
-
+    const { fmt, isText } = await probeBlobFormat(blob);
     const ext = getFileExt(f.name);
-    if (isDetectedArchive || ["zip", "cbz", "tar", "gz", "tgz", "7z"].includes(ext)) {
-      openComicReader(blob, f.name);
-      return;
+    const extLooksArchive = ["zip", "cbz", "cbr", "tar", "gz", "tgz", "7z", "rar"].includes(ext);
+
+    // Archive content: extract & render via comic reader.
+    // When extension is misleading (does not declare an archive),
+    // require admin privilege to perform the deep/recursive unwrap.
+    if (isArchiveFormat(fmt)) {
+      if (extLooksArchive || isAdmin) {
+        openComicReader(blob, f.name);
+        return;
+      }
+      toast("此文件实际为压缩包，需管理员权限解析", "info");
+      // fall through to download-only path below
     }
 
     const modal = document.getElementById("previewModal");
@@ -802,12 +1159,13 @@ async function openFileView(f) {
       const a = document.createElement("a"); a.href = url; a.download = f.name; a.click(); URL.revokeObjectURL(url);
     };
 
-    if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
+    if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
       const img = document.createElement("img"); img.src = URL.createObjectURL(blob); content.appendChild(img);
-    } else if (["txt","json","xml","js","html","css","md"].includes(ext)) {
-      const text = await blob.text(); const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
-    } else if (ext === "pdf") {
+    } else if (fmt === "pdf" || ext === "pdf") {
       const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
+    } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
+      const text = await blob.text();
+      const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
     } else {
       content.innerHTML = `<div class="empty-placeholder" style="border:none"><p>该格式不支持预览，请直接下载</p></div>`;
     }
@@ -936,15 +1294,26 @@ function initIOSFileReceive() {
 }
 
 async function handleIncomingFileURL(url) {
-  console.log("[ios-receive] handleIncomingFileURL:", url);
-  try {
-    if (!url) return;
-    if (__iosReceivedUrls.includes(url)) {
-      console.log("[ios-receive] already processed, skip");
-      return;
-    }
-    __iosReceivedUrls.push(url);
+  console.log("[ios-receive] handleIncomingFileURL:", url, "bootDone=", appBootDone);
+  if (!url) return;
+  if (__iosReceivedUrls.includes(url)) {
+    console.log("[ios-receive] already processed, skip");
+    return;
+  }
+  __iosReceivedUrls.push(url);
 
+  // If app is still on the lock screen / not yet finished its boot flow,
+  // queue the URL and drain it once admin/normal mode is established.
+  if (!appBootDone) {
+    console.log("[ios-receive] boot not done, queueing");
+    pendingExternalUrls.push(url);
+    return;
+  }
+  await processIncomingFileURL(url);
+}
+
+async function processIncomingFileURL(url) {
+  try {
     let fileName = "received";
     try { fileName = decodeURIComponent(url.split("?")[0].split("/").pop() || fileName); } catch (_) {}
     if (typeof toast === "function") toast("收到外部文件: " + fileName);
@@ -964,9 +1333,23 @@ async function handleIncomingFileURL(url) {
       console.error("[ios-receive] prepUpload not found");
     }
   } catch (e) {
-    console.error("[ios-receive] handleIncomingFileURL error:", e);
+    console.error("[ios-receive] processIncomingFileURL error:", e);
     if (typeof toast === "function") toast("接收文件失败: " + (e.message || e), "error");
   }
+}
+
+function markAppBootDone() {
+  if (appBootDone) return;
+  appBootDone = true;
+  console.log("[ios-receive] markAppBootDone — draining", pendingExternalUrls.length, "queued URL(s)");
+  // Drain queued external URLs sequentially so the choice dialog has time to show
+  (async () => {
+    while (pendingExternalUrls.length > 0) {
+      const url = pendingExternalUrls.shift();
+      // eslint-disable-next-line no-await-in-loop
+      await processIncomingFileURL(url);
+    }
+  })();
 }
 
 /* ===== INIT ===== */
@@ -983,14 +1366,19 @@ window.addEventListener("DOMContentLoaded", async () => {
   updateSecuritySettingsUI();
 
   const wasAdmin = sessionStorage.getItem("isAdminActive") === "true";
+  const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
+  const normalHash = localStorage.getItem("g_normal_hash");
   if (wasAdmin) {
     triggerBackgroundReAuth();
   } else {
-    const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
-    const normalHash = localStorage.getItem("g_normal_hash");
     if (startupLock && normalHash) {
       isStartupUnlock = true;
       openGesture();
     }
   }
+  // If no gesture flow is required, the app is immediately ready
+  // for external file processing; otherwise the gesture completion
+  // handlers will call markAppBootDone().
+  const overlayActive = document.getElementById("gestureOverlay")?.classList.contains("active");
+  if (!wasAdmin && !overlayActive) markAppBootDone();
 });
