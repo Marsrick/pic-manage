@@ -395,7 +395,7 @@ function renderPage() {
   }
 }
 
-/* ===== PAGE CURL (StPageFlip) ===== */
+/* ===== PAGE CURL (StPageFlip) — locked to single page ===== */
 function initPageFlip(host) {
   if (typeof St === "undefined" || !St.PageFlip) {
     console.warn("[reader] StPageFlip not loaded, falling back to click mode");
@@ -404,21 +404,29 @@ function initPageFlip(host) {
     renderPage();
     return;
   }
+  // Use the first page's aspect ratio so the single page isn't distorted
+  const probe = new Image();
+  probe.onload = probe.onerror = () => {
+    const iw = probe.naturalWidth || 700;
+    const ih = probe.naturalHeight || 990;
+    buildPageFlip(host, iw, ih);
+  };
+  probe.src = readerPages[rPageIdx] || readerPages[0];
+}
+
+function buildPageFlip(host, aspectW, aspectH) {
+  if (rMode !== "flip") return; // user may have switched modes during probe
   destroyPageFlip();
 
-  const rect = host.getBoundingClientRect();
-  const w = Math.max(280, Math.floor(rect.width));
-  const h = Math.max(380, Math.floor(rect.height));
-
   pageFlipInstance = new St.PageFlip(host, {
-    width: w,
-    height: h,
+    width: aspectW,
+    height: aspectH,
     size: "stretch",
-    minWidth: 200, maxWidth: 2400,
-    minHeight: 280, maxHeight: 2400,
+    minWidth: 150, maxWidth: 2400,
+    minHeight: 200, maxHeight: 2400,
     maxShadowOpacity: 0.5,
     showCover: false,
-    usePortrait: true,          // single page with curl on phones
+    usePortrait: true,          // forced single page (lib patched to ignore width)
     mobileScrollSupport: false,
     drawShadow: true,
     flippingTime: 700,
