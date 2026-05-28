@@ -222,6 +222,7 @@ async function openComicReader(zipBlob, name) {
   overlay.classList.add("active");
   readerName = name;
   rPageIdx = 0;
+  initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
 
@@ -261,7 +262,7 @@ function closeReader() {
   document.getElementById("readerOverlay").classList.remove("active");
   document.getElementById("readerCanvas").innerHTML = "";
   document.getElementById("readerControls").classList.remove("visible");
-  document.getElementById("readerSidebar").classList.remove("active");
+  closeSidebar();
 }
 
 /* ===== READER UI INIT ===== */
@@ -294,7 +295,7 @@ function initReaderUI() {
     item.className = `sidebar-item${i === 0 ? " active" : ""}`;
     item.dataset.idx = i;
     item.innerHTML = `<span class="pg-num">${String(i+1).padStart(2,"0")}</span><span>Page ${i+1}</span>`;
-    item.onclick = () => { rPageIdx = i; updateProgress(); jumpPage(i); toggleSidebar(); };
+    item.onclick = () => { rPageIdx = i; updateProgress(); jumpPage(i); closeSidebar(); };
     list.appendChild(item);
   }
 
@@ -381,51 +382,48 @@ function renderPage() {
     });
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
-    const wrap = document.createElement("div"); wrap.className = "reader-page-wrap page-flip-container";
-    
+    const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
+
     const pageContainer = document.createElement("div");
     pageContainer.className = "flip-book";
-    
-    const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
-    tapL.onclick = e => { e.stopPropagation(); animateFlip(-1); };
-    const tapR = document.createElement("div"); tapR.className = "r-tap-zone r-tap-right";
-    tapR.onclick = e => { e.stopPropagation(); animateFlip(1); };
-    
+
+    // Under page: the page that gets revealed/covered during the flip
     const pageUnder = document.createElement("div");
     pageUnder.className = "flip-page flip-under";
     const imgUnder = document.createElement("img");
     imgUnder.style.display = "none";
     pageUnder.appendChild(imgUnder);
 
-    const shadowOverlay = document.createElement("div");
-    shadowOverlay.className = "page-shadow-overlay";
-    shadowOverlay.id = "readerShadowOverlay";
-
-    const peelFold = document.createElement("div");
-    peelFold.className = "peel-fold";
-    peelFold.id = "readerPeelFold";
-
+    // Active page: the page that visually turns (only the image flips)
     const pageActive = document.createElement("div");
     pageActive.className = "flip-page flip-active";
     const imgActive = document.createElement("img");
     imgActive.src = readerPages[rPageIdx];
     imgActive.alt = `Page ${rPageIdx+1}`;
+    const shade = document.createElement("div");
+    shade.className = "flip-shade";
     pageActive.appendChild(imgActive);
+    pageActive.appendChild(shade);
 
-    pageActive.onclick = () => toggleControls();
+    const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
+    tapL.onclick = e => { e.stopPropagation(); animateFlip(-1); };
+    const tapR = document.createElement("div"); tapR.className = "r-tap-zone r-tap-right";
+    tapR.onclick = e => { e.stopPropagation(); animateFlip(1); };
+    const tapC = document.createElement("div"); tapC.className = "r-tap-zone r-tap-center";
+    tapC.onclick = e => { e.stopPropagation(); toggleControls(); };
 
     pageContainer.appendChild(pageUnder);
-    pageContainer.appendChild(shadowOverlay);
     pageContainer.appendChild(pageActive);
-    pageContainer.appendChild(peelFold);
     pageContainer.appendChild(tapL);
+    pageContainer.appendChild(tapC);
     pageContainer.appendChild(tapR);
     wrap.appendChild(pageContainer);
     container.appendChild(wrap);
   }
 }
 
-/* ===== ANIMATE FLIP (Simulation Page Turn) ===== */
+/* ===== ANIMATE FLIP (Simulation Page Turn — image only) ===== */
+const FLIP_MS = 560;
 function animateFlip(dir) {
   if (isFlipping) return;
   const next = rPageIdx + dir;
@@ -434,66 +432,74 @@ function animateFlip(dir) {
     return;
   }
 
-  isFlipping = true;
   const activePage = document.querySelector(".flip-active");
   const underPage = document.querySelector(".flip-under");
   const imgActive = activePage?.querySelector("img");
   const imgUnder = underPage?.querySelector("img");
-  const peelFold = document.getElementById("readerPeelFold");
-  const shadowOverlay = document.getElementById("readerShadowOverlay");
 
-  if (!activePage || !underPage || !imgActive || !imgUnder || !peelFold || !shadowOverlay) {
-    rPageIdx = next;
-    updateProgress();
-    renderPage();
-    isFlipping = false;
-    return;
+  if (!activePage || !underPage || !imgActive || !imgUnder) {
+    rPageIdx = next; updateProgress(); renderPage(); return;
   }
+
+  isFlipping = true;
 
   if (dir === 1) {
-    // Flipping NEXT (Right-to-Left peel)
+    // NEXT: current image turns away to the left, revealing the next page beneath
     imgUnder.src = readerPages[next];
     imgUnder.style.display = "block";
-
-    activePage.className = "flip-page flip-active peeling-next-anim";
-    peelFold.className = "peel-fold active-next";
-    shadowOverlay.className = "page-shadow-overlay active-next";
-
+    activePage.classList.add("flipping-next");
     setTimeout(() => {
-      rPageIdx = next;
-      updateProgress();
-      
-      activePage.className = "flip-page flip-active";
+      rPageIdx = next; updateProgress();
+      activePage.classList.remove("flipping-next");
       imgActive.src = readerPages[rPageIdx];
       imgUnder.style.display = "none";
-      peelFold.className = "peel-fold";
-      shadowOverlay.className = "page-shadow-overlay";
-      
       isFlipping = false;
-    }, 700);
+    }, FLIP_MS);
   } else {
-    // Flipping PREV (Left-to-Right peel)
-    imgUnder.src = readerPages[rPageIdx];
+    // PREV: previous image turns in from the left, covering the current page
+    imgUnder.src = readerPages[rPageIdx];   // current page stays beneath
     imgUnder.style.display = "block";
-
-    imgActive.src = readerPages[next];
-
-    activePage.className = "flip-page flip-active peeling-prev-anim";
-    peelFold.className = "peel-fold active-prev";
-    shadowOverlay.className = "page-shadow-overlay active-prev";
-
+    imgActive.src = readerPages[next];       // active page becomes the previous page
+    activePage.classList.add("flipping-prev-start");
+    void activePage.offsetWidth;             // force reflow so the start state applies
+    activePage.classList.add("flipping-prev");
     setTimeout(() => {
-      rPageIdx = next;
-      updateProgress();
-      
-      activePage.className = "flip-page flip-active";
+      rPageIdx = next; updateProgress();
+      activePage.classList.remove("flipping-prev-start", "flipping-prev");
       imgUnder.style.display = "none";
-      peelFold.className = "peel-fold";
-      shadowOverlay.className = "page-shadow-overlay";
-      
       isFlipping = false;
-    }, 700);
+    }, FLIP_MS);
   }
+}
+
+/* ===== SWIPE GESTURES ===== */
+let readerGesturesBound = false;
+function initReaderGestures() {
+  if (readerGesturesBound) return;
+  readerGesturesBound = true;
+  const canvas = document.getElementById("readerCanvas");
+  if (!canvas) return;
+  let sx = 0, sy = 0, st = 0, tracking = false;
+
+  canvas.addEventListener("touchstart", (e) => {
+    if (rMode !== "click" && rMode !== "flip") { tracking = false; return; }
+    const tch = e.touches[0];
+    sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true;
+  }, { passive: true });
+
+  canvas.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const tch = e.changedTouches[0];
+    const dx = tch.clientX - sx;
+    const dy = tch.clientY - sy;
+    const dt = Date.now() - st;
+    // Horizontal swipe: distance + mostly-horizontal + quick enough
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4 && dt < 700) {
+      if (dx < 0) flipPage(1);   // swipe left  -> next page
+      else flipPage(-1);          // swipe right -> previous page
+    }
+  }, { passive: true });
 }
 
 /* ===== PAGE NAVIGATION ===== */
@@ -539,8 +545,19 @@ function toggleControls() {
   document.getElementById("readerControls").classList.toggle("visible");
 }
 
+function openSidebar() {
+  document.getElementById("readerSidebar").classList.add("active");
+  document.getElementById("readerSidebarBackdrop")?.classList.add("active");
+}
+
+function closeSidebar() {
+  document.getElementById("readerSidebar").classList.remove("active");
+  document.getElementById("readerSidebarBackdrop")?.classList.remove("active");
+}
+
 function toggleSidebar() {
-  document.getElementById("readerSidebar").classList.toggle("active");
+  const open = document.getElementById("readerSidebar").classList.contains("active");
+  if (open) closeSidebar(); else openSidebar();
 }
 
 /* ===== AUTO PLAY ===== */

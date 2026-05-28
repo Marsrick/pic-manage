@@ -347,6 +347,11 @@ html, body {
 .file-icon-wrap.doc { background: rgba(59,130,246,0.12); color: var(--accent-blue); }
 .file-icon-wrap.txt { background: rgba(245,158,11,0.12); color: var(--accent-orange); }
 .file-icon-wrap.other { background: rgba(74,95,130,0.12); color: var(--text-muted); }
+.file-icon-wrap.folder { background: rgba(245,158,11,0.14); color: var(--accent-orange); }
+
+.folder-row .file-name { font-weight: 600; }
+.back-row { opacity: 0.85; }
+.back-row .file-icon-wrap { background: rgba(255,255,255,0.05); color: var(--text-muted); }
 
 .file-icon-wrap svg { width: 22px; height: 22px; }
 
@@ -824,6 +829,7 @@ html, body {
 .r-tap-zone { position: absolute; top: 0; bottom: 0; width: 35%; z-index: 15; cursor: pointer; }
 .r-tap-left { left: 0; }
 .r-tap-right { right: 0; }
+.r-tap-center { left: 35%; width: 30%; }
 
 .r-h-scroll {
   display: flex;
@@ -954,6 +960,15 @@ html, body {
 }
 
 .reader-sidebar.active { display: flex; }
+
+.reader-sidebar-backdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 199;
+}
+.reader-sidebar-backdrop.active { display: block; }
 
 .sidebar-header {
   padding: 14px 16px;
@@ -1275,20 +1290,23 @@ html, body {
   position: relative;
   width: 100%;
   height: 100%;
-  max-width: 600px;
-  max-height: 800px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 2200px;
 }
 
 .flip-page {
   position: absolute;
-  width: 100%;
-  height: 100%;
-  left: 0;
-  top: 0;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  will-change: transform;
 }
 
 .flip-page.flip-active {
@@ -1300,122 +1318,57 @@ html, body {
   z-index: 1;
 }
 
+/* Only the image carries visible content; the page box itself is transparent,
+   so the page-turn animation appears to flip just the image, not a full sheet. */
 .flip-page img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  box-shadow: 0 10px 35px rgba(0,0,0,0.6);
-  border-radius: 4px;
+  box-shadow: 0 10px 35px rgba(0,0,0,0.55);
+  border-radius: 3px;
 }
 
-/* Active page peel animations */
-.flip-active.peeling-next-anim {
-  animation: peelNextActive 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
-}
-
-.flip-active.peeling-prev-anim {
-  animation: peelPrevActive 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
-}
-
-@keyframes peelNextActive {
-  0% {
-    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  100% {
-    clip-path: polygon(0 0, 0 0, 0 100%, 0 100%);
-    transform: translate3d(-30px, -15px, 0) scale(0.98);
-  }
-}
-
-@keyframes peelPrevActive {
-  0% {
-    clip-path: polygon(0 0, 0 0, 0 100%, 0 100%);
-    transform: translate3d(-30px, -15px, 0) scale(0.98);
-  }
-  100% {
-    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-}
-
-/* Diagonal Peeling Fold & Shadow */
-.peel-fold {
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: linear-gradient(135deg, rgba(0,0,0,0) 35%, rgba(0,0,0,0.3) 42%, rgba(255,255,255,0.4) 47%, rgba(255,255,255,0.7) 48%, rgba(255,255,255,0) 49%, rgba(0,0,0,0.4) 50%, rgba(0,0,0,0) 65%);
-  transform: rotate(-30deg) translate3d(80%, 0, 0);
-  pointer-events: none;
-  z-index: 12;
-  opacity: 0;
-}
-
-.peel-fold.active-next {
-  animation: foldSweepNext 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
-}
-
-.peel-fold.active-prev {
-  animation: foldSweepPrev 0.7s cubic-bezier(0.25, 1, 0.5, 1) forwards;
-}
-
-@keyframes foldSweepNext {
-  0% {
-    opacity: 0;
-    transform: rotate(-30deg) translate3d(60%, 0, 0);
-  }
-  15% {
-    opacity: 1;
-  }
-  85% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: rotate(-30deg) translate3d(-60%, 0, 0);
-  }
-}
-
-@keyframes foldSweepPrev {
-  0% {
-    opacity: 0;
-    transform: rotate(-30deg) translate3d(-60%, 0, 0);
-  }
-  15% {
-    opacity: 1;
-  }
-  85% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: rotate(-30deg) translate3d(60%, 0, 0);
-  }
-}
-
-/* Page Shadow Overlay (Casting onto under page) */
-.page-shadow-overlay {
+/* Subtle shading that sweeps across the turning image for depth */
+.flip-shade {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 5;
   opacity: 0;
-}
-.page-shadow-overlay.active-next {
-  background: linear-gradient(to left, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0) 50%);
-  animation: shadowFade 0.7s ease forwards;
-}
-.page-shadow-overlay.active-prev {
-  background: linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0) 50%);
-  animation: shadowFade 0.7s ease forwards;
+  background: linear-gradient(to right, rgba(0,0,0,0) 55%, rgba(0,0,0,0.45) 100%);
 }
 
-@keyframes shadowFade {
-  0% { opacity: 0; }
-  35% { opacity: 0.8; }
-  75% { opacity: 0.8; }
+/* NEXT: turn current page away to the left around its left edge */
+.flip-active.flipping-next {
+  transform-origin: left center;
+  animation: pageFlipNext 0.56s cubic-bezier(0.46, 0.03, 0.52, 0.96) forwards;
+}
+.flip-active.flipping-next .flip-shade {
+  animation: shadeSweep 0.56s ease forwards;
+}
+@keyframes pageFlipNext {
+  0%   { transform: rotateY(0deg); }
+  100% { transform: rotateY(-176deg); }
+}
+
+/* PREV: bring previous page in from the left, settling flat */
+.flip-active.flipping-prev-start {
+  transform-origin: left center;
+  transform: rotateY(-176deg);
+}
+.flip-active.flipping-prev {
+  animation: pageFlipPrev 0.56s cubic-bezier(0.46, 0.03, 0.52, 0.96) forwards;
+}
+.flip-active.flipping-prev .flip-shade {
+  animation: shadeSweep 0.56s ease reverse forwards;
+}
+@keyframes pageFlipPrev {
+  0%   { transform: rotateY(-176deg); }
+  100% { transform: rotateY(0deg); }
+}
+
+@keyframes shadeSweep {
+  0%   { opacity: 0; }
+  40%  { opacity: 0.85; }
   100% { opacity: 0; }
 }
 
