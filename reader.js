@@ -8,6 +8,7 @@ let rAutoTimer = null;
 let rAutoSpeed = 3;
 let isFlipping = false;
 let pageFlipInstance = null;
+let readerImageZoomed = false;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -341,18 +342,23 @@ function renderPage() {
   container.innerHTML = "";
 
   if (rMode === "click") {
+    readerImageZoomed = false;
     const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
     const box = document.createElement("div"); box.className = "r-page-img-box";
     const img = document.createElement("img"); img.src = readerPages[rPageIdx]; img.alt = `Page ${rPageIdx+1}`;
 
     const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
-    tapL.onclick = e => { e.stopPropagation(); flipPage(-1); };
+    tapL.onclick = e => { e.stopPropagation(); if (!readerImageZoomed) flipPage(-1); };
     const tapR = document.createElement("div"); tapR.className = "r-tap-zone r-tap-right";
-    tapR.onclick = e => { e.stopPropagation(); flipPage(1); };
+    tapR.onclick = e => { e.stopPropagation(); if (!readerImageZoomed) flipPage(1); };
 
-    box.onclick = () => toggleControls();
+    box.onclick = () => { if (!readerImageZoomed) toggleControls(); };
     box.appendChild(img); box.appendChild(tapL); box.appendChild(tapR);
     wrap.appendChild(box); container.appendChild(wrap);
+
+    if (typeof enableImageZoom === "function") {
+      enableImageZoom(img, box, (z) => { readerImageZoomed = z; }, { doubleTap: false });
+    }
   } else if (rMode === "slide") {
     const wrap = document.createElement("div"); wrap.className = "r-h-scroll"; wrap.id = "hScroll";
     readerPages.forEach((src, i) => {
@@ -462,7 +468,8 @@ function initReaderGestures() {
 
   canvas.addEventListener("touchstart", (e) => {
     // Flip mode is handled by StPageFlip's own drag/curl; only click mode uses our swipe.
-    if (rMode !== "click") { tracking = false; return; }
+    // Skip when the page is zoomed (drag should pan the image instead of flipping).
+    if (rMode !== "click" || readerImageZoomed || e.touches.length > 1) { tracking = false; return; }
     const tch = e.touches[0];
     sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true;
   }, { passive: true });
@@ -502,7 +509,7 @@ function flipPage(dir) {
   rPageIdx = next; updateProgress();
   if (rMode === "click") {
     const img = document.querySelector(".r-page-img-box img");
-    if (img) { img.src = readerPages[rPageIdx]; }
+    if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; img.src = readerPages[rPageIdx]; }
   } else if (rMode === "slide") {
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;

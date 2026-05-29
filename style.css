@@ -1083,7 +1083,7 @@ html, body {
 .preview-content {
   flex: 1;
   padding: 16px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;

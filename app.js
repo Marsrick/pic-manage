@@ -866,6 +866,105 @@ function initBackgroundLock() {
   });
 }
 
+/* ===== IMAGE ZOOM & PAN (pinch / double-tap / drag) ===== */
+// Attaches pinch-zoom, double-tap toggle and drag-pan to an <img>.
+// onZoomChange(zoomed) lets callers (e.g. comic reader) disable paging while zoomed.
+function enableImageZoom(img, container, onZoomChange, opts) {
+  const allowDoubleTap = !opts || opts.doubleTap !== false;
+  let scale = 1, tx = 0, ty = 0;
+  let startDist = 0, startScale = 1;
+  let startX = 0, startY = 0, startTx = 0, startTy = 0;
+  let mode = null; // 'pinch' | 'pan'
+  let lastTap = 0;
+  const evtEl = container || img;
+
+  img.style.transformOrigin = "center center";
+  img.style.willChange = "transform";
+  img.style.touchAction = "none";
+
+  const dist = (touches) => {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  };
+  const clampVal = (v, min, max) => Math.min(max, Math.max(min, v));
+
+  function clampPan() {
+    const cw = (container || img.parentElement).clientWidth;
+    const ch = (container || img.parentElement).clientHeight;
+    const maxX = Math.max(0, (img.offsetWidth * scale - cw) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * scale - ch) / 2);
+    tx = clampVal(tx, -maxX, maxX);
+    ty = clampVal(ty, -maxY, maxY);
+  }
+
+  function apply(animate) {
+    img.style.transition = animate ? "transform 0.18s ease" : "none";
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    if (onZoomChange) onZoomChange(scale > 1.01);
+  }
+
+  function reset(animate) { scale = 1; tx = 0; ty = 0; apply(animate); }
+
+  evtEl.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      mode = "pinch";
+      startDist = dist(e.touches);
+      startScale = scale;
+      e.preventDefault();
+    } else if (e.touches.length === 1) {
+      const now = Date.now();
+      if (allowDoubleTap && now - lastTap < 300) {
+        // double tap: toggle 1x <-> 2.5x
+        if (scale > 1.01) reset(true);
+        else { scale = 2.5; clampPan(); apply(true); }
+        lastTap = 0;
+        e.preventDefault();
+        return;
+      }
+      lastTap = now;
+      if (scale > 1.01) {
+        mode = "pan";
+        startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+        startTx = tx; startTy = ty;
+      } else {
+        mode = null; // not zoomed: let underlying tap zones handle paging
+      }
+    }
+  }, { passive: false });
+
+  evtEl.addEventListener("touchmove", (e) => {
+    if (mode === "pinch" && e.touches.length === 2) {
+      e.preventDefault();
+      const d = dist(e.touches);
+      scale = clampVal(startScale * (d / startDist), 1, 5);
+      clampPan();
+      apply(false);
+    } else if (mode === "pan" && e.touches.length === 1 && scale > 1.01) {
+      e.preventDefault();
+      tx = startTx + (e.touches[0].clientX - startX);
+      ty = startTy + (e.touches[0].clientY - startY);
+      clampPan();
+      apply(false);
+    }
+  }, { passive: false });
+
+  evtEl.addEventListener("touchend", (e) => {
+    if (e.touches.length === 0) {
+      mode = null;
+      if (scale <= 1.01) reset(true);
+    } else if (e.touches.length === 1) {
+      // transition from pinch to single-finger pan
+      mode = scale > 1.01 ? "pan" : null;
+      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+      startTx = tx; startTy = ty;
+    }
+  });
+
+  // expose reset for callers
+  img._resetZoom = () => reset(false);
+}
+
 /* ===== UPLOAD ===== */
 function initUpload() {
   const zone = document.getElementById("uploadArea");
@@ -1259,6 +1358,7 @@ async function openFileView(f) {
 
     if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
       const img = document.createElement("img"); img.src = URL.createObjectURL(blob); content.appendChild(img);
+      img.addEventListener("load", () => enableImageZoom(img, content), { once: true });
     } else if (fmt === "pdf" || ext === "pdf") {
       const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
     } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
