@@ -901,7 +901,7 @@ function enableImageZoom(img, container, onZoomChange, opts) {
   function apply(animate) {
     img.style.transition = animate ? "transform 0.18s ease" : "none";
     img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-    if (onZoomChange) onZoomChange(scale > 1.01);
+    if (onZoomChange) onZoomChange(scale > 1.1);
   }
 
   function reset(animate) { scale = 1; tx = 0; ty = 0; apply(animate); }
@@ -916,14 +916,14 @@ function enableImageZoom(img, container, onZoomChange, opts) {
       const now = Date.now();
       if (allowDoubleTap && now - lastTap < 300) {
         // double tap: toggle 1x <-> 2.5x
-        if (scale > 1.01) reset(true);
+        if (scale > 1.1) reset(true);
         else { scale = 2.5; clampPan(); apply(true); }
         lastTap = 0;
         e.preventDefault();
         return;
       }
       lastTap = now;
-      if (scale > 1.01) {
+      if (scale > 1.1) {
         mode = "pan";
         startX = e.touches[0].clientX; startY = e.touches[0].clientY;
         startTx = tx; startTy = ty;
@@ -940,7 +940,7 @@ function enableImageZoom(img, container, onZoomChange, opts) {
       scale = clampVal(startScale * (d / startDist), 1, 5);
       clampPan();
       apply(false);
-    } else if (mode === "pan" && e.touches.length === 1 && scale > 1.01) {
+    } else if (mode === "pan" && e.touches.length === 1 && scale > 1.1) {
       e.preventDefault();
       tx = startTx + (e.touches[0].clientX - startX);
       ty = startTy + (e.touches[0].clientY - startY);
@@ -952,10 +952,10 @@ function enableImageZoom(img, container, onZoomChange, opts) {
   evtEl.addEventListener("touchend", (e) => {
     if (e.touches.length === 0) {
       mode = null;
-      if (scale <= 1.01) reset(true);
+      if (scale <= 1.1) reset(true);
     } else if (e.touches.length === 1) {
       // transition from pinch to single-finger pan
-      mode = scale > 1.01 ? "pan" : null;
+      mode = scale > 1.1 ? "pan" : null;
       startX = e.touches[0].clientX; startY = e.touches[0].clientY;
       startTx = tx; startTy = ty;
     }

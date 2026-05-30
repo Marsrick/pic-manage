@@ -501,7 +501,7 @@ function attachFlipZoom(wrap, target) {
     target.style.transformOrigin = "center center";
     target.style.transition = animate ? "transform 0.18s ease" : "none";
     target.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-    readerImageZoomed = scale > 1.01;
+    readerImageZoomed = scale > 1.1;
   }
 
   function reset() { scale = 1; tx = 0; ty = 0; apply(true); }
@@ -512,7 +512,7 @@ function attachFlipZoom(wrap, target) {
       mode = "pinch";
       startDist = dist2(e.touches); startScale = scale;
       e.preventDefault(); e.stopImmediatePropagation();
-    } else if (e.touches.length === 1 && scale > 1.01) {
+    } else if (e.touches.length === 1 && scale > 1.1) {
       mode = "pan";
       startX = e.touches[0].clientX; startY = e.touches[0].clientY;
       startTx = tx; startTy = ty;
@@ -539,10 +539,10 @@ function attachFlipZoom(wrap, target) {
     if (mode) e.stopImmediatePropagation();
     if (e.touches.length === 0) {
       mode = null;
-      if (scale <= 1.01) reset();
+      if (scale <= 1.1) reset();
     } else if (e.touches.length === 1) {
       // pinch lifted to a single finger — continue as pan if still zoomed
-      mode = scale > 1.01 ? "pan" : null;
+      mode = scale > 1.1 ? "pan" : null;
       startX = e.touches[0].clientX; startY = e.touches[0].clientY;
       startTx = tx; startTy = ty;
     }

@@ -743,7 +743,7 @@ html, body {
   display: none;
   position: fixed;
   inset: 0;
-  background: #000;
+  background: #fff;
   z-index: 600;
   flex-direction: column;
 }
