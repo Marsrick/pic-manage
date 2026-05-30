@@ -1253,6 +1253,35 @@ html, body {
   .app-shell { border-left: 1px solid var(--border-default); border-right: 1px solid var(--border-default); }
 }
 
+/* Tablet portrait — widen the shell so it stops looking like a phone window
+   pinned in the middle of a huge black canvas. */
+@media (min-width: 600px) {
+  .app-shell { max-width: 720px; }
+  .file-list { padding: 0 24px; }
+}
+
+/* Tablet landscape / desktop — wider still, and lay files out as a grid
+   so the horizontal space is actually used. */
+@media (min-width: 900px) {
+  .app-shell { max-width: 960px; }
+  .file-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 18px;
+    padding: 0 24px;
+  }
+  .file-row:not(:last-child)::after { display: none; }
+  .file-row { border-bottom: 1px solid var(--border-subtle); }
+  /* Center modal cards on the wide canvas, don't let them stretch */
+  .preview-card, .choice-card { margin: 0 auto; }
+}
+
+/* Very wide screens — give the shell some breathing room but don't go absurd */
+@media (min-width: 1200px) {
+  .app-shell { max-width: 1080px; }
+  .file-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ===== FLOATING ACTION UPLOAD BUTTON ===== */
 .fab-upload {
   position: absolute;
