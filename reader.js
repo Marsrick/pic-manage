@@ -9,6 +9,7 @@ let rAutoSpeed = 3;
 let isFlipping = false;
 let pageFlipInstance = null;
 let readerImageZoomed = false;
+let currentFlipZoomReset = null;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -391,12 +392,16 @@ function renderPage() {
     });
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
-    // Realistic page-curl using StPageFlip (global St.PageFlip)
-    const host = document.createElement("div");
-    host.className = "flip-host";
-    host.id = "flipHost";
-    container.appendChild(host);
-    // Defer until the host has a measured size
+    readerImageZoomed = false;
+    // Wrap the StPageFlip host in a zoom layer so we can apply pinch/pan
+    // on top of the lib without losing the curl interaction when not zoomed.
+    const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
+    const zoomLayer = document.createElement("div"); zoomLayer.className = "flip-zoom-layer";
+    const host = document.createElement("div"); host.className = "flip-host"; host.id = "flipHost";
+    zoomLayer.appendChild(host);
+    wrap.appendChild(zoomLayer);
+    container.appendChild(wrap);
+    attachFlipZoom(wrap, zoomLayer);
     setTimeout(() => initPageFlip(host), 40);
   }
 }
@@ -439,13 +444,25 @@ function buildPageFlip(host, aspectW, aspectH) {
     swipeDistance: 30,
   });
 
-  pageFlipInstance.loadFromImages(readerPages.slice());
+  // Build HTML pages so each image renders with object-fit:contain
+  // and keeps its real aspect ratio (canvas mode stretches to page rect).
+  const pageEls = readerPages.map((src, i) => {
+    const div = document.createElement("div");
+    div.className = "flip-page-content";
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = `Page ${i + 1}`;
+    div.appendChild(img);
+    return div;
+  });
+  pageFlipInstance.loadFromHTML(pageEls);
 
   if (rPageIdx > 0) {
     try { pageFlipInstance.turnToPage(rPageIdx); } catch (e) {}
   }
 
   pageFlipInstance.on("flip", (e) => {
+    if (currentFlipZoomReset) currentFlipZoomReset();
     if (typeof e.data === "number") { rPageIdx = e.data; updateProgress(); }
   });
 }
@@ -455,6 +472,81 @@ function destroyPageFlip() {
     try { pageFlipInstance.destroy(); } catch (e) {}
     pageFlipInstance = null;
   }
+  currentFlipZoomReset = null;
+  readerImageZoomed = false;
+}
+
+/* Pinch-zoom + pan layered on top of StPageFlip. While zoomed, single-finger
+   touches pan instead of curling; not zoomed, events pass through to the lib. */
+function attachFlipZoom(wrap, target) {
+  let scale = 1, tx = 0, ty = 0;
+  let mode = null, startDist = 0, startScale = 1;
+  let startX = 0, startY = 0, startTx = 0, startTy = 0;
+
+  const dist2 = (touches) => Math.hypot(
+    touches[0].clientX - touches[1].clientX,
+    touches[0].clientY - touches[1].clientY
+  );
+
+  function clampPan() {
+    const cw = wrap.clientWidth, ch = wrap.clientHeight;
+    const baseW = target.offsetWidth, baseH = target.offsetHeight;
+    const maxX = Math.max(0, (baseW * scale - cw) / 2);
+    const maxY = Math.max(0, (baseH * scale - ch) / 2);
+    tx = Math.min(maxX, Math.max(-maxX, tx));
+    ty = Math.min(maxY, Math.max(-maxY, ty));
+  }
+
+  function apply(animate) {
+    target.style.transformOrigin = "center center";
+    target.style.transition = animate ? "transform 0.18s ease" : "none";
+    target.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    readerImageZoomed = scale > 1.01;
+  }
+
+  function reset() { scale = 1; tx = 0; ty = 0; apply(true); }
+  currentFlipZoomReset = reset;
+
+  wrap.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      mode = "pinch";
+      startDist = dist2(e.touches); startScale = scale;
+      e.preventDefault(); e.stopImmediatePropagation();
+    } else if (e.touches.length === 1 && scale > 1.01) {
+      mode = "pan";
+      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+      startTx = tx; startTy = ty;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }
+    // single finger at scale 1 -> let StPageFlip handle the curl
+  }, { capture: true, passive: false });
+
+  wrap.addEventListener("touchmove", (e) => {
+    if (mode === "pinch" && e.touches.length === 2) {
+      const d = dist2(e.touches);
+      scale = Math.min(5, Math.max(1, startScale * d / startDist));
+      clampPan(); apply(false);
+      e.preventDefault(); e.stopImmediatePropagation();
+    } else if (mode === "pan" && e.touches.length === 1) {
+      tx = startTx + (e.touches[0].clientX - startX);
+      ty = startTy + (e.touches[0].clientY - startY);
+      clampPan(); apply(false);
+      e.preventDefault(); e.stopImmediatePropagation();
+    }
+  }, { capture: true, passive: false });
+
+  wrap.addEventListener("touchend", (e) => {
+    if (mode) e.stopImmediatePropagation();
+    if (e.touches.length === 0) {
+      mode = null;
+      if (scale <= 1.01) reset();
+    } else if (e.touches.length === 1) {
+      // pinch lifted to a single finger — continue as pan if still zoomed
+      mode = scale > 1.01 ? "pan" : null;
+      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+      startTx = tx; startTy = ty;
+    }
+  }, { capture: true, passive: false });
 }
 
 /* ===== SWIPE GESTURES ===== */
