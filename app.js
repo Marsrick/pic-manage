@@ -419,11 +419,31 @@ function renderBackRow(folderName) {
 }
 
 function bindFolderEvents(area) {
+  const acceptDrop = async (targetFolder, dataTransfer) => {
+    const id = Number(dataTransfer.getData("text/plain"));
+    if (!id) return;
+    const f = await dbGet(id);
+    if (!f) return;
+    if ((f.folder || null) === (targetFolder || null)) return; // already there
+    f.folder = targetFolder || undefined;
+    await dbPut(f);
+    toast(targetFolder ? `已移入「${targetFolder}」` : "已移出文件夹", "success");
+    refreshFileList();
+  };
+
   area.querySelectorAll(".folder-row").forEach(row => {
     row.addEventListener("click", e => {
       if (e.target.closest(".folder-del-btn")) return;
       currentFolder = row.dataset.folder;
       refreshFileList();
+    });
+    // Drop target: drop a dragged file row here to move it into this folder
+    row.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; row.classList.add("drag-over"); });
+    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+    row.addEventListener("drop", async e => {
+      e.preventDefault();
+      row.classList.remove("drag-over");
+      await acceptDrop(row.dataset.folder, e.dataTransfer);
     });
   });
   area.querySelectorAll(".folder-del-btn").forEach(btn => {
@@ -438,7 +458,17 @@ function bindFolderEvents(area) {
     });
   });
   const back = area.querySelector("#folderBackRow");
-  if (back) back.addEventListener("click", () => { currentFolder = null; refreshFileList(); });
+  if (back) {
+    back.addEventListener("click", () => { currentFolder = null; refreshFileList(); });
+    // Drop on the back row to remove a file from the current folder
+    back.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; back.classList.add("drag-over"); });
+    back.addEventListener("dragleave", () => back.classList.remove("drag-over"));
+    back.addEventListener("drop", async e => {
+      e.preventDefault();
+      back.classList.remove("drag-over");
+      await acceptDrop(null, e.dataTransfer);
+    });
+  }
 }
 
 function renderFileRow(f, showLock) {
@@ -450,7 +480,7 @@ function renderFileRow(f, showLock) {
     : "";
 
   return `
-    <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}">
+    <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}" draggable="true">
       ${checkboxHtml}
       <div class="file-icon-wrap ${iconCls}">${getIconSVG(f.name)}${lockBadge}</div>
       <div class="file-info">
@@ -497,6 +527,14 @@ function bindFileRowEvents(area) {
       const f = all.find(x => x.id === id);
       if (f) openFileView(f);
     });
+    // Drag source: report the file id so a folder row can accept the drop
+    row.addEventListener("dragstart", (e) => {
+      if (multiSelectMode) { e.preventDefault(); return; }
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", row.dataset.id);
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => row.classList.remove("dragging"));
   });
 }
 
@@ -1268,13 +1306,25 @@ function toggleSelection(id) {
 
 async function compressSelected() {
   if (multiSelectIds.size === 0) { toast("请先选择文件", "info"); return; }
-  const name = prompt("压缩包名称：", `archive-${Date.now()}.zip`);
+  document.getElementById("formatDialog").classList.add("active");
+}
+
+function closeFormatDialog() {
+  document.getElementById("formatDialog").classList.remove("active");
+}
+
+async function compressAs(format) {
+  closeFormatDialog();
+  if (multiSelectIds.size === 0) return;
+  const defaultName = `archive-${Date.now()}.${format}`;
+  const name = prompt("压缩包名称：", defaultName);
   if (!name) return;
 
-  toast("正在压缩...", "info");
+  toast(`正在压缩为 ${format.toUpperCase()}...`, "info");
   try {
-    const zip = new JSZip();
+    // Decrypt + collect source files first
     const all = await dbAll();
+    const entries = [];
     for (const id of multiSelectIds) {
       const f = all.find(x => x.id === id);
       if (!f) continue;
@@ -1284,36 +1334,133 @@ async function compressSelected() {
         const dec = await decryptBuf(await blob.arrayBuffer(), adminKey);
         blob = new Blob([dec]);
       }
-      zip.file(f.name, blob);
+      entries.push({ name: f.name, data: new Uint8Array(await blob.arrayBuffer()) });
     }
-    const zipBlob = await zip.generateAsync({ type: "blob" });
 
-    // Save the resulting zip into DB
-    const finalName = /\.zip$/i.test(name) ? name : (name + ".zip");
-    let stored = zipBlob;
+    let outBlob, mime;
+    if (format === "zip") {
+      const zip = new JSZip();
+      for (const e of entries) zip.file(e.name, e.data);
+      outBlob = await zip.generateAsync({ type: "blob" });
+      mime = "application/zip";
+    } else if (format === "7z") {
+      outBlob = new Blob([await build7z(entries)]);
+      mime = "application/x-7z-compressed";
+    } else if (format === "tar") {
+      outBlob = new Blob([buildTar(entries)]);
+      mime = "application/x-tar";
+    } else {
+      throw new Error("未知格式: " + format);
+    }
+
+    const ext = "." + format;
+    const finalName = new RegExp(ext + "$", "i").test(name) ? name : (name + ext);
+    let stored = outBlob;
     let priv = false;
     if (isAdmin && adminKey) {
-      // Ask whether to encrypt the resulting zip
       priv = confirm("将压缩结果保存为加密文件？(确定=加密 / 取消=公开)");
       if (priv) {
-        const enc = await encryptBuf(await zipBlob.arrayBuffer(), adminKey);
+        const enc = await encryptBuf(await outBlob.arrayBuffer(), adminKey);
         stored = new Blob([enc]);
       }
     }
     await dbAdd({
       name: finalName,
-      size: zipBlob.size,
-      type: "application/zip",
+      folder: currentFolder || undefined,
+      size: outBlob.size,
+      type: mime,
       isPrivate: priv,
       uploadedAt: Date.now(),
       data: stored
     });
-    toast(`已压缩 ${multiSelectIds.size} 个文件为 ${finalName}`, "success");
+    toast(`已压缩 ${entries.length} 个文件为 ${finalName}`, "success");
     toggleMultiSelect();
   } catch (e) {
     console.error("[compress] error:", e);
     toast("压缩失败: " + (e.message || e), "error");
   }
+}
+
+/* ===== 7Z BUILDER (via 7zz wasm) ===== */
+async function build7z(entries) {
+  if (typeof SevenZip === "undefined") throw new Error("7z 库未加载");
+  const instance = await SevenZip({
+    locateFile: (path) => path.endsWith(".wasm") ? "lib/7zz.wasm" : "lib/" + path
+  });
+  // Write files at root so the archive stores plain basenames
+  const seen = new Set();
+  const names = [];
+  for (const e of entries) {
+    let n = (e.name || "file").replace(/[\\/]/g, "_");
+    let base = n;
+    let i = 1;
+    while (seen.has(n)) { n = base.replace(/(\.[^.]+)?$/, `-${i++}$&`); }
+    seen.add(n);
+    instance.FS.writeFile(n, e.data);
+    names.push(n);
+  }
+  try {
+    instance.callMain(["a", "out.7z", ...names]);
+  } catch (err) {
+    if (err.name !== "ExitStatus" || err.status !== 0) throw err;
+  }
+  return instance.FS.readFile("out.7z");
+}
+
+/* ===== TAR BUILDER (plain ustar format) ===== */
+function buildTar(entries) {
+  const blocks = [];
+  for (const e of entries) {
+    blocks.push(tarHeader(e.name, e.data.length));
+    blocks.push(e.data);
+    const rem = e.data.length % 512;
+    if (rem) blocks.push(new Uint8Array(512 - rem));
+  }
+  // End-of-archive: two zero blocks
+  blocks.push(new Uint8Array(1024));
+
+  let total = 0;
+  for (const b of blocks) total += b.byteLength;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const b of blocks) {
+    out.set(b instanceof Uint8Array ? b : new Uint8Array(b), off);
+    off += b.byteLength;
+  }
+  return out;
+}
+
+function tarHeader(name, size) {
+  const h = new Uint8Array(512);
+  const writeStr = (str, offset, length) => {
+    for (let i = 0; i < Math.min(str.length, length); i++) h[offset + i] = str.charCodeAt(i) & 0xff;
+  };
+  const writeOctal = (value, offset, length) => {
+    const s = value.toString(8).padStart(length - 1, "0");
+    writeStr(s, offset, length - 1);
+    h[offset + length - 1] = 0;
+  };
+
+  const safeName = (name || "file").replace(/^\/+/, "").slice(0, 99);
+  writeStr(safeName, 0, 100);
+  writeOctal(0o644, 100, 8);  // mode
+  writeOctal(0, 108, 8);       // uid
+  writeOctal(0, 116, 8);       // gid
+  writeOctal(size, 124, 12);   // size
+  writeOctal(Math.floor(Date.now() / 1000), 136, 12); // mtime
+  // checksum placeholder = 8 spaces
+  for (let i = 0; i < 8; i++) h[148 + i] = 0x20;
+  h[156] = 0x30; // typeflag '0' = normal file
+  writeStr("ustar", 257, 6); // magic
+  writeStr("00", 263, 2);     // version
+
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += h[i];
+  const cksum = sum.toString(8).padStart(6, "0");
+  writeStr(cksum, 148, 6);
+  h[148 + 6] = 0;
+  h[148 + 7] = 0x20;
+  return h;
 }
 
 /* ===== FILE VIEW ===== */

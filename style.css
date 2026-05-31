@@ -1,41 +1,41 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 :root {
-  /* Deep Navy Dark Theme - matching prototype */
-  --bg-primary: #050a18;
-  --bg-secondary: #0c1529;
-  --bg-card: #111d35;
-  --bg-card-hover: #162544;
-  --bg-input: #0a1325;
-  --bg-overlay: rgba(5, 10, 24, 0.92);
+  /* Day / light theme */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f7fa;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f0f4f8;
+  --bg-input: #f8f9fb;
+  --bg-overlay: rgba(255, 255, 255, 0.92);
 
-  --border-default: rgba(59, 100, 180, 0.15);
+  --border-default: rgba(15, 23, 42, 0.10);
   --border-active: rgba(59, 130, 246, 0.6);
-  --border-subtle: rgba(255, 255, 255, 0.04);
+  --border-subtle: rgba(15, 23, 42, 0.05);
 
-  --text-primary: #e8ecf4;
-  --text-secondary: #8899b8;
-  --text-muted: #4a5f82;
+  --text-primary: #1a202c;
+  --text-secondary: #4a5568;
+  --text-muted: #94a3b8;
   --text-white: #ffffff;
 
   --accent-blue: #3b82f6;
   --accent-blue-light: #60a5fa;
-  --accent-blue-glow: rgba(59, 130, 246, 0.25);
-  --accent-cyan: #22d3ee;
-  --accent-purple: #a78bfa;
+  --accent-blue-glow: rgba(59, 130, 246, 0.18);
+  --accent-cyan: #06b6d4;
+  --accent-purple: #8b5cf6;
   --accent-red: #ef4444;
   --accent-orange: #f59e0b;
   --accent-green: #10b981;
   --accent-pink: #ec4899;
 
-  --gradient-blue: linear-gradient(135deg, #1e3a8a, #3b82f6);
-  --gradient-card: linear-gradient(180deg, #111d35, #0c1529);
-  --gradient-header: linear-gradient(180deg, #0c1529 0%, rgba(12, 21, 41, 0.95) 100%);
+  --gradient-blue: linear-gradient(135deg, #2563eb, #3b82f6);
+  --gradient-card: linear-gradient(180deg, #ffffff, #f5f7fa);
+  --gradient-header: linear-gradient(180deg, #ffffff 0%, rgba(245, 247, 250, 0.95) 100%);
 
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
-  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.15);
+  --shadow-card: 0 4px 18px rgba(15, 23, 42, 0.08);
+  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.18);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -142,7 +142,7 @@ html, body {
   height: 34px;
   border-radius: 50%;
   border: 1px solid var(--border-default);
-  background: rgba(255,255,255,0.03);
+  background: rgba(15,23,42,0.04);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
@@ -351,7 +351,16 @@ html, body {
 
 .folder-row .file-name { font-weight: 600; }
 .back-row { opacity: 0.85; }
-.back-row .file-icon-wrap { background: rgba(255,255,255,0.05); color: var(--text-muted); }
+.back-row .file-icon-wrap { background: rgba(15,23,42,0.05); color: var(--text-muted); }
+
+/* Drag and drop into folders */
+.file-row.dragging { opacity: 0.55; }
+.file-row.folder-row.drag-over,
+.file-row.back-row.drag-over {
+  background: rgba(59, 130, 246, 0.12);
+  outline: 2px dashed var(--accent-blue);
+  outline-offset: -4px;
+}
 
 .file-icon-wrap svg { width: 22px; height: 22px; }
 
@@ -537,9 +546,9 @@ html, body {
   display: none;
   position: fixed;
   inset: 0;
-  background: var(--bg-overlay);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   z-index: 500;
   flex-direction: column;
   align-items: center;
@@ -754,7 +763,7 @@ html, body {
 .reader-top {
   height: calc(44px + var(--safe-top));
   padding-top: var(--safe-top);
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
@@ -762,7 +771,7 @@ html, body {
   padding-right: 12px;
   gap: 12px;
   z-index: 100;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .reader-back-btn {
@@ -784,13 +793,13 @@ html, body {
 .reader-page-indicator {
   font-size: 0.8rem;
   font-weight: 600;
-  color: rgba(255,255,255,0.9);
+  color: var(--text-primary);
 }
 
 .reader-file-name {
   flex: 1;
   font-size: 0.8rem;
-  color: rgba(255,255,255,0.6);
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -800,7 +809,7 @@ html, body {
 .reader-menu-btn {
   background: none;
   border: none;
-  color: rgba(255,255,255,0.9);
+  color: var(--text-primary);
   cursor: pointer;
   padding: 6px;
   display: flex;
@@ -888,7 +897,7 @@ html, body {
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(0,0,0,0.88);
+  background: rgba(255,255,255,0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   padding: 14px 16px calc(14px + var(--safe-bottom));
@@ -898,7 +907,7 @@ html, body {
   z-index: 100;
   transform: translateY(100%);
   transition: transform 0.3s ease;
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid var(--border-default);
 }
 
 .reader-controls.visible { transform: translateY(0); }
@@ -911,7 +920,7 @@ html, body {
 
 .ctrl-label {
   font-size: 0.75rem;
-  color: rgba(255,255,255,0.5);
+  color: var(--text-secondary);
   white-space: nowrap;
   min-width: 50px;
 }
@@ -923,9 +932,9 @@ html, body {
 }
 
 .ctrl-select {
-  background: rgba(255,255,255,0.08);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 6px 10px;
   font-family: var(--font-family);
@@ -934,12 +943,12 @@ html, body {
   cursor: pointer;
 }
 
-.ctrl-select option { background: #111; }
+.ctrl-select option { background: #fff; color: var(--text-primary); }
 
 .ctrl-btn {
-  background: rgba(255,255,255,0.08);
-  border: none;
-  color: #fff;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
   border-radius: 20px;
   padding: 7px 14px;
   font-family: var(--font-family);
@@ -952,8 +961,8 @@ html, body {
   transition: var(--transition);
 }
 
-.ctrl-btn:hover { background: var(--accent-blue); }
-.ctrl-btn.active { background: var(--accent-blue); }
+.ctrl-btn:hover { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
+.ctrl-btn.active { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
 .ctrl-btn svg { width: 14px; height: 14px; }
 
 /* Chapter sidebar */
@@ -964,7 +973,7 @@ html, body {
   top: 0;
   bottom: 0;
   width: 260px;
-  background: rgba(12,21,41,0.98);
+  background: rgba(255,255,255,0.98);
   backdrop-filter: blur(20px);
   z-index: 200;
   flex-direction: column;
@@ -1029,7 +1038,7 @@ html, body {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.92);
+  background: rgba(15, 23, 42, 0.55);
   z-index: 400;
   align-items: center;
   justify-content: center;
@@ -1130,7 +1139,7 @@ html, body {
   gap: 6px;
 }
 
-.pv-btn-default { background: rgba(255,255,255,0.05); border: 1px solid var(--border-default); color: var(--text-secondary); }
+.pv-btn-default { background: rgba(15,23,42,0.05); border: 1px solid var(--border-default); color: var(--text-secondary); }
 .pv-btn-default:hover { border-color: var(--text-primary); }
 .pv-btn-primary { background: var(--gradient-blue); border: none; color: #fff; }
 .pv-btn svg { width: 14px; height: 14px; }
@@ -1140,7 +1149,7 @@ html, body {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.85);
+  background: rgba(15, 23, 42, 0.45);
   z-index: 450;
   align-items: center;
   justify-content: center;
@@ -1168,7 +1177,7 @@ html, body {
   padding: 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-default);
-  background: rgba(255,255,255,0.02);
+  background: rgba(15,23,42,0.03);
   cursor: pointer;
   transition: var(--transition);
   display: flex;
@@ -1461,7 +1470,7 @@ input:checked + .slider:before {
   text-align: left;
 }
 .action-menu-item svg { width: 22px; height: 22px; opacity: 0.85; }
-.action-menu-item:hover, .action-menu-item:active { background: rgba(255,255,255,0.04); }
+.action-menu-item:hover, .action-menu-item:active { background: rgba(15,23,42,0.05); }
 .action-menu-item.danger { color: #ef4444; }
 .action-menu-cancel {
   justify-content: center;
@@ -1475,7 +1484,7 @@ input:checked + .slider:before {
   width: 100%; box-sizing: border-box;
   margin: 14px 0 6px;
   padding: 12px 14px;
-  background: rgba(255,255,255,0.04);
+  background: rgba(15,23,42,0.05);
   border: 1px solid var(--border-default, rgba(255,255,255,0.12));
   border-radius: 10px;
   color: var(--text-primary, #f1f5f9);
@@ -1486,7 +1495,7 @@ input:checked + .slider:before {
 .rename-btns { display: flex; gap: 10px; margin-top: 14px; }
 .rename-btns button { flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px; cursor: pointer; }
 .rename-btns .choice-cancel {
-  background: rgba(255,255,255,0.05);
+  background: rgba(15,23,42,0.05);
   color: var(--text-primary, #f1f5f9);
   border: 1px solid var(--border-default, rgba(255,255,255,0.12));
   margin: 0;
@@ -1524,7 +1533,7 @@ input:checked + .slider:before {
 }
 .ms-info { color: var(--text-primary, #f1f5f9); font-size: 14px; }
 .ms-btn {
-  background: rgba(255,255,255,0.05);
+  background: rgba(15,23,42,0.05);
   border: 1px solid var(--border-default, rgba(255,255,255,0.12));
   color: var(--text-primary, #f1f5f9);
   padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
