@@ -1401,35 +1401,46 @@ html, body {
   background: #000;
 }
 
-/* Page-curl host (StPageFlip mounts its DOM here) */
-.flip-host {
+/* Self-built single-page flip */
+.flip-stage {
+  position: relative;
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.flip-host .stf__parent { margin: 0 auto; }
-
-/* HTML-page content: each page is a div containing an <img> that preserves
-   its real aspect ratio via object-fit, so different image shapes don't
-   get distorted into a fixed page rect. */
-.flip-page-content {
-  width: 100%;
-  height: 100%;
-  background: #fff;
+  perspective: 2000px;
   overflow: hidden;
+}
+.flip-sheet {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
-.flip-page-content img {
+.flip-sheet img {
+  max-width: 100%;
+  max-height: 100%;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: contain;     /* fill by longest side, never stretch */
   display: block;
   user-select: none;
   -webkit-user-drag: none;
+}
+.flip-turn {
+  z-index: 2;
+  transform-origin: left center;
+  will-change: transform;
+}
+.flip-under { z-index: 1; }
+/* Shading sweep over the turning page for depth */
+.flip-sh {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to right, rgba(0,0,0,0.35), rgba(0,0,0,0) 55%);
+  opacity: 0;
 }
 
 /* ===== SECURITY SWITCH TOGGLE ===== */
