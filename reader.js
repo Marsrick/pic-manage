@@ -291,14 +291,25 @@ function initReaderUI() {
   modeSel.onchange = () => { rMode = modeSel.value; stopAuto(); renderPage(); };
   speedSlider.oninput = () => { rAutoSpeed = parseInt(speedSlider.value); document.getElementById("rSpeedVal").textContent = rAutoSpeed; if (rAutoPlaying) { stopAuto(); startAuto(); } };
 
-  // Build sidebar chapter list
+  // Build sidebar thumbnail grid
   const list = document.getElementById("sidebarList");
   list.innerHTML = "";
   for (let i = 0; i < readerPages.length; i++) {
     const item = document.createElement("div");
-    item.className = `sidebar-item${i === 0 ? " active" : ""}`;
+    item.className = `sidebar-item${i === rPageIdx ? " active" : ""}`;
     item.dataset.idx = i;
-    item.innerHTML = `<span class="pg-num">${String(i+1).padStart(2,"0")}</span><span>Page ${i+1}</span>`;
+    const thumb = document.createElement("div");
+    thumb.className = "thumb-wrap";
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.src = readerPages[i];
+    img.alt = `Page ${i + 1}`;
+    thumb.appendChild(img);
+    const num = document.createElement("span");
+    num.className = "thumb-num";
+    num.textContent = i + 1;
+    item.appendChild(thumb);
+    item.appendChild(num);
     item.onclick = () => { rPageIdx = i; updateProgress(); jumpPage(i); closeSidebar(); };
     list.appendChild(item);
   }
@@ -633,6 +644,11 @@ function toggleControls() {
 function openSidebar() {
   document.getElementById("readerSidebar").classList.add("active");
   document.getElementById("readerSidebarBackdrop")?.classList.add("active");
+  // Scroll the current page's thumbnail into view
+  setTimeout(() => {
+    const active = document.querySelector(".sidebar-item.active");
+    if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, 60);
 }
 
 function closeSidebar() {
