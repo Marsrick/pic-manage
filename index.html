@@ -257,30 +257,25 @@
   <!-- Sidebar backdrop (tap outside to close) -->
   <div class="reader-sidebar-backdrop" id="readerSidebarBackdrop" onclick="closeSidebar()"></div>
 
-  <!-- Chapter Select (full-screen fan) -->
+  <!-- Chapter Drawer (bottom thumbnail grid) -->
   <div class="reader-sidebar" id="readerSidebar">
-    <div class="fan-top">
-      <span class="fan-title" data-i18n="chapterList">目录</span>
+    <div class="sidebar-header">
+      <h3 data-i18n="chapterList">目录</h3>
       <button class="sidebar-close" onclick="closeSidebar()">
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
-    <div class="chapter-fan" id="sidebarList"></div>
-    <div class="fan-bottom">
-      <button class="fan-nav" onclick="fanStep(-1)">‹ 上一页</button>
-      <span class="fan-indicator" id="fanIndicator"></span>
-      <button class="fan-nav" onclick="fanStep(1)">下一页 ›</button>
-    </div>
-    <div class="fan-hint">左右滑动浏览 · 点击中间页跳转</div>
+    <div class="sidebar-grid" id="sidebarList"></div>
   </div>
 
   <div class="reader-canvas" id="readerCanvas"></div>
 
   <!-- Reader Controls -->
   <div class="reader-controls" id="readerControls">
-    <div class="ctrl-row">
-      <input type="range" class="ctrl-slider" id="rPageSlider" min="1" max="1" value="1">
-      <select class="ctrl-select" id="rPageSelect" style="width:80px"></select>
+    <div class="ctrl-row ctrl-fan-row">
+      <button class="pf-arrow" onclick="pageFanStep(-1)" title="上一页">‹</button>
+      <div class="page-fan" id="pageFan"></div>
+      <button class="pf-arrow" onclick="pageFanStep(1)" title="下一页">›</button>
     </div>
     <div class="ctrl-row">
       <button class="ctrl-btn" onclick="toggleSidebar()" title="目录">
