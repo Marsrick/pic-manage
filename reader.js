@@ -371,17 +371,10 @@ function renderPage() {
   } else if (rMode === "flip") {
     readerImageZoomed = false;
     // StPageFlip owns touch (drag/curl) directly — no wrapping transform layer,
-    // which previously corrupted its clip-path/curl math. Taps are handled via
-    // the click event, which does NOT fire during a drag, so it can't interfere.
+    // which previously corrupted its clip-path/curl math.
     const host = document.createElement("div"); host.className = "flip-host"; host.id = "flipHost";
     container.appendChild(host);
-    host.addEventListener("click", (e) => {
-      const r = host.getBoundingClientRect();
-      const x = e.clientX - r.left;
-      if (x < r.width * 0.3) flipPrevPage();
-      else if (x > r.width * 0.7) flipNextPage();
-      else toggleControls();
-    });
+    attachFlipTapZones(host);
     setTimeout(() => initPageFlip(host), 40);
   }
 }
@@ -446,10 +439,50 @@ function buildPageFlip(host, pageW, pageH) {
 }
 
 function flipNextPage() {
-  if (pageFlipInstance) { try { pageFlipInstance.flipNext(); } catch (e) {} }
+  if (pageFlipInstance) { try { pageFlipInstance.flipNext("top"); } catch (e) {} }
 }
 function flipPrevPage() {
-  if (pageFlipInstance) { try { pageFlipInstance.flipPrev(); } catch (e) {} }
+  if (pageFlipInstance) { try { pageFlipInstance.flipPrev("top"); } catch (e) {} }
+}
+
+// Tap zones for flip mode. StPageFlip calls preventDefault() on touchstart
+// (mobileScrollSupport:false), which suppresses the synthesized `click`
+// event — so we detect a tap from touchstart/touchend ourselves WITHOUT
+// preventDefault/stopPropagation, leaving StPageFlip's drag-curl untouched.
+function attachFlipTapZones(host) {
+  let sx = 0, sy = 0, st = 0, moved = false, lastTap = 0;
+
+  const zone = (clientX) => {
+    const r = host.getBoundingClientRect();
+    const x = clientX - r.left;
+    if (x < r.width * 0.30) flipPrevPage();
+    else if (x > r.width * 0.70) flipNextPage();
+    else toggleControls();
+  };
+
+  host.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { moved = true; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+    st = Date.now(); moved = false;
+  }, { passive: true });
+
+  host.addEventListener("touchmove", (e) => {
+    if (e.touches.length && (Math.abs(e.touches[0].clientX - sx) > 10 || Math.abs(e.touches[0].clientY - sy) > 10)) {
+      moved = true;
+    }
+  }, { passive: true });
+
+  host.addEventListener("touchend", () => {
+    if (moved || Date.now() - st > 300) return; // a drag/curl, not a tap
+    lastTap = Date.now();
+    zone(sx);
+  }, { passive: true });
+
+  // Desktop fallback (no touch); ignored right after a touch tap to avoid double-fire
+  host.addEventListener("click", (e) => {
+    if (Date.now() - lastTap < 600) return;
+    zone(e.clientX);
+  });
 }
 
 function destroyPageFlip() {
