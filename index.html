@@ -257,16 +257,20 @@
   <!-- Sidebar backdrop (tap outside to close) -->
   <div class="reader-sidebar-backdrop" id="readerSidebarBackdrop" onclick="closeSidebar()"></div>
 
-  <!-- Chapter Drawer (fan thumbnails) -->
+  <!-- Chapter Select (full-screen fan) -->
   <div class="reader-sidebar" id="readerSidebar">
-    <div class="sidebar-header">
-      <h3 data-i18n="chapterList">目录</h3>
-      <button class="sidebar-close" onclick="toggleSidebar()">
+    <div class="fan-top">
+      <span class="fan-title" data-i18n="chapterList">目录</span>
+      <button class="sidebar-close" onclick="closeSidebar()">
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
     <div class="chapter-fan" id="sidebarList"></div>
-    <div class="fan-indicator" id="fanIndicator"></div>
+    <div class="fan-bottom">
+      <button class="fan-nav" onclick="fanStep(-1)">‹ 上一页</button>
+      <span class="fan-indicator" id="fanIndicator"></span>
+      <button class="fan-nav" onclick="fanStep(1)">下一页 ›</button>
+    </div>
     <div class="fan-hint">左右滑动浏览 · 点击中间页跳转</div>
   </div>
 

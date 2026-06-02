@@ -291,7 +291,7 @@ function initReaderUI() {
   modeSel.onchange = () => { rMode = modeSel.value; stopAuto(); renderPage(); };
   speedSlider.oninput = () => { rAutoSpeed = parseInt(speedSlider.value); document.getElementById("rSpeedVal").textContent = rAutoSpeed; if (rAutoPlaying) { stopAuto(); startAuto(); } };
 
-  // Chapter fan is rendered on demand when the drawer opens (renderChapterFan)
+  // Chapter fan slots/layout are built when the selector opens (openSidebar)
   initFanGestures();
 
   updateProgress();
@@ -617,57 +617,135 @@ function toggleControls() {
 }
 
 function openSidebar() {
-  fanCenter = rPageIdx;
-  renderChapterFan();
+  buildFanSlots();
+  fanPos = rPageIdx;
+  fanVel = 0;
+  cancelAnimationFrame(fanRAF);
+  layoutFan();
   document.getElementById("readerSidebar").classList.add("active");
   document.getElementById("readerSidebarBackdrop")?.classList.add("active");
 }
 
-/* ===== CHAPTER FAN (curved thumbnail selector) ===== */
-let fanCenter = 0;
-const FAN_RANGE = 2; // pages on each side of center -> 5 thumbnails total
+/* ===== CHAPTER FAN (full-screen fan with momentum scrolling) ===== */
+let fanPos = 0;            // floating "current page" position; integer = centered
+let fanVel = 0;            // velocity in pages/second (for inertia)
+let fanRAF = null;
+let fanSlots = [];
+const FAN_SLOTS = 7;       // rendered cards (center +/- 3)
+const FAN_ANGLE = 16;      // degrees per page of separation
+const FAN_FRICTION = 0.93; // inertia decay per frame
+const FAN_PX_PER_PAGE = 92;// drag pixels that equal one page
 
-function renderChapterFan() {
+function buildFanSlots() {
   const list = document.getElementById("sidebarList");
   if (!list) return;
-  const total = readerPages.length;
-  fanCenter = Math.max(0, Math.min(total - 1, fanCenter));
   list.innerHTML = "";
-
-  for (let off = -FAN_RANGE; off <= FAN_RANGE; off++) {
-    const idx = fanCenter + off;
-    if (idx < 0 || idx >= total) continue;
-    const dist = Math.abs(off);
-
+  fanSlots = [];
+  for (let s = 0; s < FAN_SLOTS; s++) {
     const item = document.createElement("div");
-    item.className = "fan-item" + (off === 0 ? " center" : "");
-    item.dataset.idx = idx;
-
-    const angle = off * 15;
-    const scale = off === 0 ? 1.05 : (dist === 1 ? 0.88 : 0.74);
-    item.style.transform = `rotate(${angle}deg) scale(${scale})`;
-    item.style.zIndex = String(10 - dist);
-    item.style.opacity = off === 0 ? "1" : (dist === 1 ? "0.9" : "0.7");
-
+    item.className = "fan-item";
+    item.dataset.curIdx = "-999";
     const img = document.createElement("img");
-    img.src = readerPages[idx];
-    img.alt = `Page ${idx + 1}`;
-    item.appendChild(img);
-
     const num = document.createElement("span");
     num.className = "fan-num";
-    num.textContent = idx + 1;
+    item.appendChild(img);
     item.appendChild(num);
-
-    item.onclick = () => {
-      if (off !== 0) { fanCenter = idx; renderChapterFan(); return; } // bring side page to center first
-      rPageIdx = idx; updateProgress(); jumpPage(idx); closeSidebar();
-    };
+    item.addEventListener("click", () => {
+      const idx = parseInt(item.dataset.curIdx, 10);
+      if (isNaN(idx) || idx < 0) return;
+      if (idx === Math.round(fanPos)) selectFanPage(idx); // tap center -> open
+      else animateFanTo(idx);                              // tap side -> recenter
+    });
     list.appendChild(item);
+    fanSlots.push(item);
   }
+}
 
+function layoutFan() {
+  const total = readerPages.length;
+  const base = Math.round(fanPos);
+  const half = Math.floor(FAN_SLOTS / 2);
+  for (let s = 0; s < FAN_SLOTS; s++) {
+    const idx = base + (s - half);
+    const item = fanSlots[s];
+    if (!item) continue;
+    if (idx < 0 || idx >= total) { item.style.display = "none"; continue; }
+    item.style.display = "";
+    if (item.dataset.curIdx !== String(idx)) {
+      item.dataset.curIdx = String(idx);
+      item.querySelector("img").src = readerPages[idx];
+      item.querySelector(".fan-num").textContent = "PAGE " + (idx + 1);
+    }
+    const rel = idx - fanPos;                 // continuous offset from center
+    const clamped = Math.max(-3, Math.min(3, rel));
+    const absRel = Math.min(Math.abs(rel), 3);
+    const scale = 1.08 - absRel * 0.13;
+    item.style.transform = `rotate(${clamped * FAN_ANGLE}deg) scale(${scale})`;
+    item.style.zIndex = String(100 - Math.round(absRel * 10));
+    item.style.opacity = String(Math.max(0.2, 1 - absRel * 0.18));
+    item.classList.toggle("center", idx === base);
+  }
   const ind = document.getElementById("fanIndicator");
-  if (ind) ind.textContent = `${fanCenter + 1} / ${total}`;
+  if (ind) {
+    const cur = Math.max(0, Math.min(total - 1, base));
+    ind.textContent = `${cur + 1} / ${total}`;
+  }
+}
+
+function clampFanPos() {
+  const max = readerPages.length - 1;
+  if (fanPos < 0) { fanPos = 0; fanVel = 0; }
+  else if (fanPos > max) { fanPos = max; fanVel = 0; }
+}
+
+function fanInertia() {
+  cancelAnimationFrame(fanRAF);
+  let last = performance.now();
+  const step = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    fanPos += fanVel * dt;
+    fanVel *= FAN_FRICTION;
+    clampFanPos();
+    layoutFan();
+    if (Math.abs(fanVel) > 0.15) {
+      fanRAF = requestAnimationFrame(step);
+    } else {
+      snapFan();
+    }
+  };
+  fanRAF = requestAnimationFrame(step);
+}
+
+function snapFan() {
+  cancelAnimationFrame(fanRAF);
+  const target = Math.max(0, Math.min(readerPages.length - 1, Math.round(fanPos)));
+  const step = () => {
+    fanPos += (target - fanPos) * 0.22;
+    if (Math.abs(target - fanPos) < 0.005) { fanPos = target; layoutFan(); return; }
+    layoutFan();
+    fanRAF = requestAnimationFrame(step);
+  };
+  fanRAF = requestAnimationFrame(step);
+}
+
+function animateFanTo(idx) {
+  cancelAnimationFrame(fanRAF);
+  const target = Math.max(0, Math.min(readerPages.length - 1, idx));
+  const step = () => {
+    fanPos += (target - fanPos) * 0.22;
+    if (Math.abs(target - fanPos) < 0.005) { fanPos = target; layoutFan(); return; }
+    layoutFan();
+    fanRAF = requestAnimationFrame(step);
+  };
+  fanRAF = requestAnimationFrame(step);
+}
+
+function fanStep(dir) {
+  animateFanTo(Math.round(fanPos) + dir);
+}
+
+function selectFanPage(idx) {
+  rPageIdx = idx; updateProgress(); jumpPage(idx); closeSidebar();
 }
 
 let fanGesturesBound = false;
@@ -676,34 +754,49 @@ function initFanGestures() {
   const fan = document.getElementById("sidebarList");
   if (!fan) return;
   fanGesturesBound = true;
-  let sx = 0, sy = 0, tracking = false;
+  let startX = 0, startPos = 0, lastX = 0, lastT = 0, dragging = false, moved = false;
 
   fan.addEventListener("touchstart", (e) => {
-    sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
+    cancelAnimationFrame(fanRAF);
+    dragging = true; moved = false;
+    startX = lastX = e.touches[0].clientX;
+    startPos = fanPos;
+    lastT = performance.now();
+    fanVel = 0;
   }, { passive: true });
 
-  fan.addEventListener("touchend", (e) => {
-    if (!tracking) return;
-    tracking = false;
-    const dx = e.changedTouches[0].clientX - sx;
-    const dy = e.changedTouches[0].clientY - sy;
-    if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy)) {
-      fanCenter += dx < 0 ? 1 : -1;   // swipe left -> next, right -> prev
-      renderChapterFan();
-    }
+  fan.addEventListener("touchmove", (e) => {
+    if (!dragging) return;
+    const x = e.touches[0].clientX;
+    if (Math.abs(x - startX) > 4) moved = true;
+    const now = performance.now();
+    fanPos = startPos - (x - startX) / FAN_PX_PER_PAGE;
+    clampFanPos();
+    layoutFan();
+    const dt = (now - lastT) / 1000;
+    if (dt > 0) fanVel = -((x - lastX) / FAN_PX_PER_PAGE) / dt; // pages/sec, scaled by drag speed
+    lastX = x; lastT = now;
   }, { passive: true });
 
-  // mouse wheel / trackpad horizontal scroll support
+  fan.addEventListener("touchend", () => {
+    if (!dragging) return;
+    dragging = false;
+    if (!moved) return;                  // a tap: let the card click handler run
+    if (Math.abs(fanVel) > 0.4) fanInertia();
+    else snapFan();
+  }, { passive: true });
+
+  // Trackpad / wheel: one page per notch
   fan.addEventListener("wheel", (e) => {
     const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-    if (Math.abs(d) < 8) return;
+    if (Math.abs(d) < 6) return;
     e.preventDefault();
-    fanCenter += d > 0 ? 1 : -1;
-    renderChapterFan();
+    fanStep(d > 0 ? 1 : -1);
   }, { passive: false });
 }
 
 function closeSidebar() {
+  cancelAnimationFrame(fanRAF);
   document.getElementById("readerSidebar").classList.remove("active");
   document.getElementById("readerSidebarBackdrop")?.classList.remove("active");
 }
