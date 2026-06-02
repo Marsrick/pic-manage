@@ -257,7 +257,7 @@
   <!-- Sidebar backdrop (tap outside to close) -->
   <div class="reader-sidebar-backdrop" id="readerSidebarBackdrop" onclick="closeSidebar()"></div>
 
-  <!-- Chapter Sidebar -->
+  <!-- Chapter Drawer (fan thumbnails) -->
   <div class="reader-sidebar" id="readerSidebar">
     <div class="sidebar-header">
       <h3 data-i18n="chapterList">目录</h3>
@@ -265,7 +265,9 @@
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
-    <div class="sidebar-list" id="sidebarList"></div>
+    <div class="chapter-fan" id="sidebarList"></div>
+    <div class="fan-indicator" id="fanIndicator"></div>
+    <div class="fan-hint">左右滑动浏览 · 点击中间页跳转</div>
   </div>
 
   <div class="reader-canvas" id="readerCanvas"></div>

@@ -291,28 +291,8 @@ function initReaderUI() {
   modeSel.onchange = () => { rMode = modeSel.value; stopAuto(); renderPage(); };
   speedSlider.oninput = () => { rAutoSpeed = parseInt(speedSlider.value); document.getElementById("rSpeedVal").textContent = rAutoSpeed; if (rAutoPlaying) { stopAuto(); startAuto(); } };
 
-  // Build sidebar thumbnail grid
-  const list = document.getElementById("sidebarList");
-  list.innerHTML = "";
-  for (let i = 0; i < readerPages.length; i++) {
-    const item = document.createElement("div");
-    item.className = `sidebar-item${i === rPageIdx ? " active" : ""}`;
-    item.dataset.idx = i;
-    const thumb = document.createElement("div");
-    thumb.className = "thumb-wrap";
-    const img = document.createElement("img");
-    img.loading = "lazy";
-    img.src = readerPages[i];
-    img.alt = `Page ${i + 1}`;
-    thumb.appendChild(img);
-    const num = document.createElement("span");
-    num.className = "thumb-num";
-    num.textContent = i + 1;
-    item.appendChild(thumb);
-    item.appendChild(num);
-    item.onclick = () => { rPageIdx = i; updateProgress(); jumpPage(i); closeSidebar(); };
-    list.appendChild(item);
-  }
+  // Chapter fan is rendered on demand when the drawer opens (renderChapterFan)
+  initFanGestures();
 
   updateProgress();
 }
@@ -321,11 +301,6 @@ function updateProgress() {
   document.getElementById("rPageSlider").value = rPageIdx + 1;
   document.getElementById("rPageSelect").value = rPageIdx;
   document.getElementById("readerPageIndicator").textContent = `${String(rPageIdx+1).padStart(2,"0")}/${readerPages.length}`;
-
-  // Update sidebar active
-  document.querySelectorAll(".sidebar-item").forEach(item => {
-    item.classList.toggle("active", parseInt(item.dataset.idx) === rPageIdx);
-  });
 
   // Preload adjacent pages
   preloadAdjacent();
@@ -642,13 +617,90 @@ function toggleControls() {
 }
 
 function openSidebar() {
+  fanCenter = rPageIdx;
+  renderChapterFan();
   document.getElementById("readerSidebar").classList.add("active");
   document.getElementById("readerSidebarBackdrop")?.classList.add("active");
-  // Scroll the current page's thumbnail into view
-  setTimeout(() => {
-    const active = document.querySelector(".sidebar-item.active");
-    if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, 60);
+}
+
+/* ===== CHAPTER FAN (curved thumbnail selector) ===== */
+let fanCenter = 0;
+const FAN_RANGE = 2; // pages on each side of center -> 5 thumbnails total
+
+function renderChapterFan() {
+  const list = document.getElementById("sidebarList");
+  if (!list) return;
+  const total = readerPages.length;
+  fanCenter = Math.max(0, Math.min(total - 1, fanCenter));
+  list.innerHTML = "";
+
+  for (let off = -FAN_RANGE; off <= FAN_RANGE; off++) {
+    const idx = fanCenter + off;
+    if (idx < 0 || idx >= total) continue;
+    const dist = Math.abs(off);
+
+    const item = document.createElement("div");
+    item.className = "fan-item" + (off === 0 ? " center" : "");
+    item.dataset.idx = idx;
+
+    const angle = off * 15;
+    const scale = off === 0 ? 1.05 : (dist === 1 ? 0.88 : 0.74);
+    item.style.transform = `rotate(${angle}deg) scale(${scale})`;
+    item.style.zIndex = String(10 - dist);
+    item.style.opacity = off === 0 ? "1" : (dist === 1 ? "0.9" : "0.7");
+
+    const img = document.createElement("img");
+    img.src = readerPages[idx];
+    img.alt = `Page ${idx + 1}`;
+    item.appendChild(img);
+
+    const num = document.createElement("span");
+    num.className = "fan-num";
+    num.textContent = idx + 1;
+    item.appendChild(num);
+
+    item.onclick = () => {
+      if (off !== 0) { fanCenter = idx; renderChapterFan(); return; } // bring side page to center first
+      rPageIdx = idx; updateProgress(); jumpPage(idx); closeSidebar();
+    };
+    list.appendChild(item);
+  }
+
+  const ind = document.getElementById("fanIndicator");
+  if (ind) ind.textContent = `${fanCenter + 1} / ${total}`;
+}
+
+let fanGesturesBound = false;
+function initFanGestures() {
+  if (fanGesturesBound) return;
+  const fan = document.getElementById("sidebarList");
+  if (!fan) return;
+  fanGesturesBound = true;
+  let sx = 0, sy = 0, tracking = false;
+
+  fan.addEventListener("touchstart", (e) => {
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
+  }, { passive: true });
+
+  fan.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy)) {
+      fanCenter += dx < 0 ? 1 : -1;   // swipe left -> next, right -> prev
+      renderChapterFan();
+    }
+  }, { passive: true });
+
+  // mouse wheel / trackpad horizontal scroll support
+  fan.addEventListener("wheel", (e) => {
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(d) < 8) return;
+    e.preventDefault();
+    fanCenter += d > 0 ? 1 : -1;
+    renderChapterFan();
+  }, { passive: false });
 }
 
 function closeSidebar() {
