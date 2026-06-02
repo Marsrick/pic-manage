@@ -1657,19 +1657,48 @@ async function handleIncomingFileURL(url) {
   await processIncomingFileURL(url);
 }
 
+function base64ToBlob(b64, type) {
+  const bin = atob(b64);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: type || "application/octet-stream" });
+}
+
+// Read an incoming file URL into a Blob. On iOS, WKWebView fetch() of
+// file:// is unreliable, so try the Capacitor Filesystem plugin first
+// (works for any file type), then fall back to fetch(convertFileSrc).
+async function readIncomingFile(url) {
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const Filesystem = plugins.Filesystem;
+  if (Filesystem && typeof Filesystem.readFile === "function") {
+    try {
+      const res = await Filesystem.readFile({ path: url });
+      if (res && typeof res.data === "string") {
+        console.log("[ios-receive] read via Filesystem, base64 len:", res.data.length);
+        return base64ToBlob(res.data, "");
+      }
+    } catch (e) {
+      console.warn("[ios-receive] Filesystem.readFile failed, falling back to fetch:", e);
+    }
+  }
+  const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
+    ? window.Capacitor.convertFileSrc(url) : url;
+  console.log("[ios-receive] fetching:", webUrl);
+  const resp = await fetch(webUrl);
+  if (!resp.ok) throw new Error("fetch failed " + resp.status);
+  return await resp.blob();
+}
+
 async function processIncomingFileURL(url) {
   try {
     let fileName = "received";
     try { fileName = decodeURIComponent(url.split("?")[0].split("/").pop() || fileName); } catch (_) {}
     if (typeof toast === "function") toast("收到外部文件: " + fileName);
 
-    const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
-      ? window.Capacitor.convertFileSrc(url) : url;
-    console.log("[ios-receive] fetching:", webUrl);
-    const resp = await fetch(webUrl);
-    if (!resp.ok) throw new Error("fetch failed " + resp.status);
-    const blob = await resp.blob();
+    const blob = await readIncomingFile(url);
     console.log("[ios-receive] got blob size:", blob.size, "type:", blob.type);
+    if (!blob.size) throw new Error("空文件或无法读取");
 
     const file = new File([blob], fileName, { type: blob.type || "application/octet-stream" });
     if (typeof prepUpload === "function") {

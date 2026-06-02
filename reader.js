@@ -9,7 +9,6 @@ let rAutoSpeed = 3;
 let isFlipping = false;
 let pageFlipInstance = null;
 let readerImageZoomed = false;
-let currentFlipZoomReset = null;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -371,15 +370,18 @@ function renderPage() {
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
     readerImageZoomed = false;
-    // Wrap the StPageFlip host in a zoom layer so we can apply pinch/pan
-    // on top of the lib without losing the curl interaction when not zoomed.
-    const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
-    const zoomLayer = document.createElement("div"); zoomLayer.className = "flip-zoom-layer";
+    // StPageFlip owns touch (drag/curl) directly — no wrapping transform layer,
+    // which previously corrupted its clip-path/curl math. Taps are handled via
+    // the click event, which does NOT fire during a drag, so it can't interfere.
     const host = document.createElement("div"); host.className = "flip-host"; host.id = "flipHost";
-    zoomLayer.appendChild(host);
-    wrap.appendChild(zoomLayer);
-    container.appendChild(wrap);
-    attachFlipZoom(wrap, zoomLayer);
+    container.appendChild(host);
+    host.addEventListener("click", (e) => {
+      const r = host.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      if (x < r.width * 0.3) flipPrevPage();
+      else if (x > r.width * 0.7) flipNextPage();
+      else toggleControls();
+    });
     setTimeout(() => initPageFlip(host), 40);
   }
 }
@@ -418,8 +420,8 @@ function buildPageFlip(host, pageW, pageH) {
     drawShadow: true,
     flippingTime: 420,          // snappier turn
     swipeDistance: 18,          // more sensitive swipe
-    disableFlipByClick: true,   // taps handled by our zone logic instead
-    showPageCorners: false,     // no corner-peek preview (it fought our tap flips)
+    disableFlipByClick: true,   // taps handled by our click-zone logic
+    showPageCorners: true,      // live corner-peek while dragging
     useMouseEvents: true,
   });
 
@@ -439,7 +441,6 @@ function buildPageFlip(host, pageW, pageH) {
   }
 
   pageFlipInstance.on("flip", (e) => {
-    if (currentFlipZoomReset) currentFlipZoomReset();
     if (typeof e.data === "number") { rPageIdx = e.data; updateProgress(); }
   });
 }
@@ -456,99 +457,7 @@ function destroyPageFlip() {
     try { pageFlipInstance.destroy(); } catch (e) {}
     pageFlipInstance = null;
   }
-  currentFlipZoomReset = null;
   readerImageZoomed = false;
-}
-
-/* Pinch-zoom + pan layered on top of StPageFlip. While zoomed, single-finger
-   touches pan instead of curling; not zoomed, events pass through to the lib. */
-function attachFlipZoom(wrap, target) {
-  let scale = 1, tx = 0, ty = 0;
-  let mode = null, startDist = 0, startScale = 1;
-  let startX = 0, startY = 0, startTx = 0, startTy = 0;
-
-  const dist2 = (touches) => Math.hypot(
-    touches[0].clientX - touches[1].clientX,
-    touches[0].clientY - touches[1].clientY
-  );
-
-  function clampPan() {
-    const cw = wrap.clientWidth, ch = wrap.clientHeight;
-    const baseW = target.offsetWidth, baseH = target.offsetHeight;
-    const maxX = Math.max(0, (baseW * scale - cw) / 2);
-    const maxY = Math.max(0, (baseH * scale - ch) / 2);
-    tx = Math.min(maxX, Math.max(-maxX, tx));
-    ty = Math.min(maxY, Math.max(-maxY, ty));
-  }
-
-  function apply(animate) {
-    target.style.transformOrigin = "center center";
-    target.style.transition = animate ? "transform 0.18s ease" : "none";
-    target.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-    readerImageZoomed = scale > 1.1;
-  }
-
-  function reset() { scale = 1; tx = 0; ty = 0; apply(true); }
-  currentFlipZoomReset = reset;
-
-  // Tap tracking: distinguish a tap (zone action) from a curl drag
-  let tapX = 0, tapY = 0, tapT = 0, tapMoved = false;
-
-  wrap.addEventListener("touchstart", (e) => {
-    if (e.touches.length === 1) {
-      tapX = e.touches[0].clientX; tapY = e.touches[0].clientY;
-      tapT = Date.now(); tapMoved = false;
-    }
-    if (e.touches.length === 2) {
-      mode = "pinch";
-      startDist = dist2(e.touches); startScale = scale;
-      e.preventDefault(); e.stopImmediatePropagation();
-    } else if (e.touches.length === 1 && scale > 1.1) {
-      mode = "pan";
-      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-      startTx = tx; startTy = ty;
-      e.preventDefault(); e.stopImmediatePropagation();
-    }
-    // single finger at scale 1 -> let StPageFlip handle the curl
-  }, { capture: true, passive: false });
-
-  wrap.addEventListener("touchmove", (e) => {
-    if (e.touches.length === 1) {
-      if (Math.abs(e.touches[0].clientX - tapX) > 8 || Math.abs(e.touches[0].clientY - tapY) > 8) tapMoved = true;
-    }
-    if (mode === "pinch" && e.touches.length === 2) {
-      const d = dist2(e.touches);
-      scale = Math.min(5, Math.max(1, startScale * d / startDist));
-      clampPan(); apply(false);
-      e.preventDefault(); e.stopImmediatePropagation();
-    } else if (mode === "pan" && e.touches.length === 1) {
-      tx = startTx + (e.touches[0].clientX - startX);
-      ty = startTy + (e.touches[0].clientY - startY);
-      clampPan(); apply(false);
-      e.preventDefault(); e.stopImmediatePropagation();
-    }
-  }, { capture: true, passive: false });
-
-  wrap.addEventListener("touchend", (e) => {
-    if (mode) e.stopImmediatePropagation();
-    if (e.touches.length === 0) {
-      // A quick, near-stationary single-finger touch = tap -> zone action.
-      if (!mode && !tapMoved && scale <= 1.1 && Date.now() - tapT < 300) {
-        const w = wrap.clientWidth;
-        const x = tapX - wrap.getBoundingClientRect().left;
-        if (x < w * 0.3) flipPrevPage();
-        else if (x > w * 0.7) flipNextPage();
-        else toggleControls();
-        e.stopImmediatePropagation();
-      }
-      mode = null;
-      if (scale <= 1.1) reset();
-    } else if (e.touches.length === 1) {
-      mode = scale > 1.1 ? "pan" : null;
-      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-      startTx = tx; startTy = ty;
-    }
-  }, { capture: true, passive: false });
 }
 
 /* ===== SWIPE GESTURES ===== */
