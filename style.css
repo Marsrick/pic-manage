@@ -761,6 +761,8 @@ html, body {
 
 /* Reader Top Bar */
 .reader-top {
+  position: absolute;
+  top: 0; left: 0; right: 0;
   height: calc(44px + var(--safe-top));
   padding-top: var(--safe-top);
   background: rgba(255, 255, 255, 0.92);
@@ -772,7 +774,9 @@ html, body {
   gap: 12px;
   z-index: 100;
   border-bottom: 1px solid var(--border-default);
+  transition: transform 0.3s ease;
 }
+.reader-top.hidden { transform: translateY(-100%); }
 
 .reader-back-btn {
   background: none;
@@ -1063,16 +1067,15 @@ html, body {
 .pf-item {
   position: absolute;
   left: 50%;
-  top: 50%;
+  bottom: 14px;
   width: 78px;
   height: 108px;
   margin-left: -39px;
-  margin-top: -62px;
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
   border: 2px solid rgba(15,23,42,0.12);
-  transform-origin: 50% 168px;   /* pivot below the card => fan spread */
+  transform-origin: 50% 100%;   /* lean around the card's bottom edge */
   box-shadow: 0 3px 12px rgba(15,23,42,0.28);
   cursor: pointer;
   will-change: transform, opacity;

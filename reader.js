@@ -393,37 +393,36 @@ function initPageFlip(host) {
     renderPage();
     return;
   }
-  // Use the first page's aspect ratio so the single page isn't distorted
-  const probe = new Image();
-  probe.onload = probe.onerror = () => {
-    const iw = probe.naturalWidth || 700;
-    const ih = probe.naturalHeight || 990;
-    buildPageFlip(host, iw, ih);
-  };
-  probe.src = readerPages[rPageIdx] || readerPages[0];
+  // Size each page to fill the reading area; images use object-fit:contain
+  // inside, so any aspect ratio fills the screen by its longest side
+  // without being stretched.
+  const w = Math.max(200, Math.floor(host.clientWidth));
+  const h = Math.max(200, Math.floor(host.clientHeight));
+  buildPageFlip(host, w, h);
 }
 
-function buildPageFlip(host, aspectW, aspectH) {
-  if (rMode !== "flip") return; // user may have switched modes during probe
+function buildPageFlip(host, pageW, pageH) {
+  if (rMode !== "flip") return;
   destroyPageFlip();
 
   pageFlipInstance = new St.PageFlip(host, {
-    width: aspectW,
-    height: aspectH,
+    width: pageW,
+    height: pageH,
     size: "stretch",
-    minWidth: 150, maxWidth: 2400,
-    minHeight: 200, maxHeight: 2400,
-    maxShadowOpacity: 0.5,
+    minWidth: 150, maxWidth: 3000,
+    minHeight: 200, maxHeight: 3000,
+    maxShadowOpacity: 0.4,
     showCover: false,
     usePortrait: true,          // forced single page (lib patched to ignore width)
     mobileScrollSupport: false,
     drawShadow: true,
-    flippingTime: 700,
-    swipeDistance: 30,
+    flippingTime: 420,          // snappier turn
+    swipeDistance: 18,          // more sensitive swipe
+    disableFlipByClick: true,   // taps handled by our zone logic instead
+    showPageCorners: false,     // no corner-peek preview (it fought our tap flips)
+    useMouseEvents: true,
   });
 
-  // Build HTML pages so each image renders with object-fit:contain
-  // and keeps its real aspect ratio (canvas mode stretches to page rect).
   const pageEls = readerPages.map((src, i) => {
     const div = document.createElement("div");
     div.className = "flip-page-content";
@@ -443,6 +442,13 @@ function buildPageFlip(host, aspectW, aspectH) {
     if (currentFlipZoomReset) currentFlipZoomReset();
     if (typeof e.data === "number") { rPageIdx = e.data; updateProgress(); }
   });
+}
+
+function flipNextPage() {
+  if (pageFlipInstance) { try { pageFlipInstance.flipNext(); } catch (e) {} }
+}
+function flipPrevPage() {
+  if (pageFlipInstance) { try { pageFlipInstance.flipPrev(); } catch (e) {} }
 }
 
 function destroyPageFlip() {
@@ -485,7 +491,14 @@ function attachFlipZoom(wrap, target) {
   function reset() { scale = 1; tx = 0; ty = 0; apply(true); }
   currentFlipZoomReset = reset;
 
+  // Tap tracking: distinguish a tap (zone action) from a curl drag
+  let tapX = 0, tapY = 0, tapT = 0, tapMoved = false;
+
   wrap.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 1) {
+      tapX = e.touches[0].clientX; tapY = e.touches[0].clientY;
+      tapT = Date.now(); tapMoved = false;
+    }
     if (e.touches.length === 2) {
       mode = "pinch";
       startDist = dist2(e.touches); startScale = scale;
@@ -500,6 +513,9 @@ function attachFlipZoom(wrap, target) {
   }, { capture: true, passive: false });
 
   wrap.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 1) {
+      if (Math.abs(e.touches[0].clientX - tapX) > 8 || Math.abs(e.touches[0].clientY - tapY) > 8) tapMoved = true;
+    }
     if (mode === "pinch" && e.touches.length === 2) {
       const d = dist2(e.touches);
       scale = Math.min(5, Math.max(1, startScale * d / startDist));
@@ -516,10 +532,18 @@ function attachFlipZoom(wrap, target) {
   wrap.addEventListener("touchend", (e) => {
     if (mode) e.stopImmediatePropagation();
     if (e.touches.length === 0) {
+      // A quick, near-stationary single-finger touch = tap -> zone action.
+      if (!mode && !tapMoved && scale <= 1.1 && Date.now() - tapT < 300) {
+        const w = wrap.clientWidth;
+        const x = tapX - wrap.getBoundingClientRect().left;
+        if (x < w * 0.3) flipPrevPage();
+        else if (x > w * 0.7) flipNextPage();
+        else toggleControls();
+        e.stopImmediatePropagation();
+      }
       mode = null;
       if (scale <= 1.1) reset();
     } else if (e.touches.length === 1) {
-      // pinch lifted to a single finger — continue as pan if still zoomed
       mode = scale > 1.1 ? "pan" : null;
       startX = e.touches[0].clientX; startY = e.touches[0].clientY;
       startTx = tx; startTy = ty;
@@ -605,7 +629,12 @@ function jumpPage(idx) {
 
 /* ===== CONTROLS TOGGLE ===== */
 function toggleControls() {
-  document.getElementById("readerControls").classList.toggle("visible");
+  const top = document.getElementById("readerTop");
+  const ctrl = document.getElementById("readerControls");
+  // Currently shown -> hide everything (immersive); otherwise show both.
+  const hide = !top.classList.contains("hidden");
+  top.classList.toggle("hidden", hide);
+  ctrl.classList.toggle("visible", !hide);
 }
 
 /* ===== CHAPTER DRAWER (bottom thumbnail grid) ===== */
@@ -687,7 +716,14 @@ function buildPageFan() {
 
 function layoutPageFan() {
   if (!pfSlots.length) return;
+  const host = document.getElementById("pageFan");
   const total = readerPages.length;
+  const cw = host ? host.clientWidth : 320;
+  // Horizontal spacing adapts to screen width so cards aren't cramped:
+  // ~5 cards should comfortably span the available width.
+  const spacing = Math.max(48, Math.min(132, cw / 4.4));
+  const tilt = 12; // degrees of lean per page (fan look)
+
   const lo = Math.floor(pfPos) - 3, hi = Math.floor(pfPos) + 3;
   const need = [];
   for (let i = lo; i <= hi; i++) if (i >= 0 && i < total) need.push(i);
@@ -707,15 +743,17 @@ function layoutPageFan() {
       s.querySelector(".pf-num").textContent = idx + 1;
     }
     const rel = idx - pfPos;
-    const clamped = Math.max(-2.6, Math.min(2.6, rel));
     const absRel = Math.min(Math.abs(rel), 3);
-    s.style.transform = `rotate(${clamped * PF_ANGLE}deg) scale(${1.12 - absRel * 0.16})`;
+    const x = rel * spacing;
+    const angle = Math.max(-2.6, Math.min(2.6, rel)) * tilt;
+    const y = absRel * absRel * 7;            // outer cards dip slightly -> arc
+    const scale = 1.16 - absRel * 0.12;
+    s.style.transform = `translateX(${x}px) translateY(${y}px) rotate(${angle}deg) scale(${scale})`;
     s.style.zIndex = String(100 - Math.round(absRel * 10));
-    s.style.opacity = String(Math.max(0.25, 1 - absRel * 0.22));
+    s.style.opacity = String(Math.max(0.3, 1 - absRel * 0.2));
     s.classList.toggle("center", idx === base);
     s.style.display = "";
   });
-  // hide slots no longer needed
   pfSlots.forEach(s => { if (s._idx == null || !needSet.has(s._idx)) s.style.display = "none"; });
 }
 
