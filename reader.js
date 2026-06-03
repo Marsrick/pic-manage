@@ -521,8 +521,8 @@ function initReaderGestures() {
     const dx = tch.clientX - sx;
     const dy = tch.clientY - sy;
     const dt = Date.now() - st;
-    // Horizontal swipe: distance + mostly-horizontal + quick enough
-    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4 && dt < 700) {
+    // Horizontal swipe: enough distance, mostly horizontal, within a generous time
+    if (Math.abs(dx) > 38 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 1200) {
       if (dx < 0) flipPage(1);   // swipe left  -> next page
       else flipPage(-1);          // swipe right -> previous page
     }

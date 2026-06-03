@@ -1590,13 +1590,16 @@ input:checked + .slider:before {
 
 .multi-select-bar {
   position: fixed; left: 0; right: 0;
-  bottom: calc(env(safe-area-inset-bottom) + 84px);
+  bottom: 0;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 18px;
-  background: var(--bg-secondary, #1a1d24);
-  border-top: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+  background: var(--bg-card, #fff);
+  border-top: 1px solid var(--border-default);
+  box-shadow: 0 -4px 18px rgba(15,23,42,0.1);
   z-index: 50;
 }
+/* Pad the scrollable list so the fixed bar / compress FAB don't cover rows */
+body.ms-active .file-list { padding-bottom: 96px; }
 .ms-info { color: var(--text-primary, #f1f5f9); font-size: 14px; }
 .ms-btn {
   background: rgba(15,23,42,0.05);
@@ -1606,7 +1609,7 @@ input:checked + .slider:before {
 }
 
 .fab-compress {
-  bottom: calc(env(safe-area-inset-bottom) + 24px);
-  right: 96px;
+  bottom: calc(env(safe-area-inset-bottom) + 76px);
+  right: 20px;
   background: linear-gradient(135deg, #f59e0b, #d97706);
 }
