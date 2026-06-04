@@ -42,7 +42,11 @@ function parseTar(arrayBuffer) {
     offset += 512;
 
     if (typeFlag === '0' || typeFlag === '\0') {
-      const fileData = uint8.subarray(offset, offset + size);
+      // slice() copies into its OWN ArrayBuffer, so file.data.buffer is just
+      // this entry's bytes. (subarray would share the whole tar's buffer,
+      // making magic-byte detection re-find the parent tar's "ustar" marker
+      // and recurse forever — tar would never extract.)
+      const fileData = uint8.slice(offset, offset + size);
       files.push({
         name: name.trim(),
         data: fileData,
@@ -135,6 +139,36 @@ function isArchiveData(name, arrayBuffer) {
   return isArchive(name);
 }
 
+// Detect an image by magic bytes (so files without a usable extension,
+// e.g. "u=123456" downloaded image names, are still recognized).
+function isImageData(data) {
+  const u = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if (u.length < 4) return false;
+  if (u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4E && u[3] === 0x47) return true;          // PNG
+  if (u[0] === 0xFF && u[1] === 0xD8 && u[2] === 0xFF) return true;                            // JPEG
+  if (u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38) return true;          // GIF
+  if (u.length >= 12 && u[0] === 0x52 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x46
+      && u[8] === 0x57 && u[9] === 0x45 && u[10] === 0x42 && u[11] === 0x50) return true;      // WEBP
+  if (u[0] === 0x42 && u[1] === 0x4D) return true;                                             // BMP
+  return false;
+}
+
+function isImageEntry(name, data) {
+  const ext = (name || "").split(".").pop().toLowerCase();
+  if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) return true;
+  return isImageData(data);
+}
+
+// Return an ArrayBuffer holding exactly this view's bytes (a typed-array
+// view may share a larger buffer; never pass the shared buffer to detection
+// or it reads the wrong offset).
+function exactBuffer(u) {
+  if (!(u instanceof Uint8Array)) return u;
+  return (u.byteOffset === 0 && u.byteLength === u.buffer.byteLength)
+    ? u.buffer
+    : u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength);
+}
+
 async function extractAllImagesRecursive(name, arrayBuffer) {
   let images = [];
   const uint8 = new Uint8Array(arrayBuffer);
@@ -161,11 +195,8 @@ async function extractAllImagesRecursive(name, arrayBuffer) {
       if (isArchiveData(entry.name, entryBuf)) {
         const sub = await extractAllImagesRecursive(entry.name, entryBuf);
         images.push(...sub);
-      } else {
-        const entryExt = entry.name.split(".").pop().toLowerCase();
-        if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(entryExt)) {
-          images.push({ name: entry.name, data: new Blob([entryBuf]) });
-        }
+      } else if (isImageEntry(entry.name, new Uint8Array(entryBuf))) {
+        images.push({ name: entry.name, data: new Blob([entryBuf]) });
       }
     }
   } else if (format === "tar" || format === "gzip") {
@@ -177,38 +208,33 @@ async function extractAllImagesRecursive(name, arrayBuffer) {
         console.error("pako ungzip failed", e);
       }
     }
-    const innerType = detectMagicType(uint8Data.buffer);
+    const innerType = detectMagicType(exactBuffer(uint8Data));
     if (innerType === "tar" || name.toLowerCase().endsWith(".tar") || name.toLowerCase().endsWith(".tgz")) {
-      const tarFiles = parseTar(uint8Data.buffer);
+      const tarFiles = parseTar(exactBuffer(uint8Data));
       for (const file of tarFiles) {
-        if (isArchiveData(file.name, file.data.buffer)) {
-          const sub = await extractAllImagesRecursive(file.name, file.data.buffer);
+        const eb = exactBuffer(file.data);
+        if (isArchiveData(file.name, eb)) {
+          const sub = await extractAllImagesRecursive(file.name, eb);
           images.push(...sub);
-        } else {
-          const fileExt = file.name.split(".").pop().toLowerCase();
-          if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
-            images.push({ name: file.name, data: new Blob([file.data]) });
-          }
+        } else if (isImageEntry(file.name, file.data)) {
+          images.push({ name: file.name, data: new Blob([file.data]) });
         }
       }
     } else {
       const cleanName = name.replace(/\.gz$/i, "");
-      const fileExt = cleanName.split(".").pop().toLowerCase();
-      if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
-        images.push({ name: cleanName, data: new Blob([uint8Data.buffer]) });
+      if (isImageEntry(cleanName, uint8Data)) {
+        images.push({ name: cleanName, data: new Blob([uint8Data]) });
       }
     }
   } else if (format === "7z") {
     const files = await extract7z(arrayBuffer);
     for (const file of files) {
-      if (isArchiveData(file.name, file.data.buffer)) {
-        const sub = await extractAllImagesRecursive(file.name, file.data.buffer);
+      const eb = exactBuffer(file.data);
+      if (isArchiveData(file.name, eb)) {
+        const sub = await extractAllImagesRecursive(file.name, eb);
         images.push(...sub);
-      } else {
-        const fileExt = file.name.split(".").pop().toLowerCase();
-        if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(fileExt)) {
-          images.push({ name: file.name, data: new Blob([file.data]) });
-        }
+      } else if (isImageEntry(file.name, file.data)) {
+        images.push({ name: file.name, data: new Blob([file.data]) });
       }
     }
   }
