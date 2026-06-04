@@ -369,132 +369,247 @@ function renderPage() {
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
     readerImageZoomed = false;
-    // Self-built single-page flip (reliable across desktop/mobile, always
-    // one page, no external engine). Two stacked sheets: the turning page
-    // on top, the revealed page beneath.
+    // Self-built Canvas page-curl: the turning page rolls onto a cylinder
+    // (per-column cylindrical deformation), following the finger.
     const stage = document.createElement("div"); stage.className = "flip-stage"; stage.id = "flipStage";
-    const under = document.createElement("div"); under.className = "flip-sheet flip-under";
-    const uimg = document.createElement("img"); under.appendChild(uimg);
-    const turn = document.createElement("div"); turn.className = "flip-sheet flip-turn";
-    const timg = document.createElement("img"); timg.src = readerPages[rPageIdx]; timg.alt = `Page ${rPageIdx + 1}`;
-    const sh = document.createElement("div"); sh.className = "flip-sh";
-    turn.appendChild(timg); turn.appendChild(sh);
-    under.style.display = "none";
-    stage.appendChild(under); stage.appendChild(turn);
+    const canvas = document.createElement("canvas"); canvas.className = "flip-canvas"; canvas.id = "flipCanvas";
+    stage.appendChild(canvas);
     container.appendChild(stage);
-    attachFlipTapZones(stage);
+    setTimeout(() => initCurl(stage, canvas), 30);
   }
 }
 
 /* ===== SELF-BUILT SINGLE-PAGE FLIP ===== */
-let flipAnimating = false;
-const FLIP_DURATION = 520;
+/* ===== SELF-BUILT CANVAS PAGE-CURL ===== */
+let curlCanvas = null, curlCtx = null;
+let curlCW = 0, curlCH = 0, curlDpr = 1;
+let curlOffA = null, curlOffB = null;   // offscreen page frames
+const curlImgCache = new Map();         // idx -> HTMLImageElement
+let curlBusy = false;
+let curlRAF = null;
+let curlResizeBound = false;
 
-// dir: +1 next, -1 prev. Rotates the top sheet around its left edge in 3D,
-// revealing the adjacent page beneath. Reliable everywhere; always 1 page.
-function customFlip(dir) {
-  if (flipAnimating) return;
-  const next = rPageIdx + dir;
-  if (next < 0 || next >= readerPages.length) {
-    if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
-    return;
-  }
-  const stage = document.getElementById("flipStage");
-  if (!stage) { rPageIdx = next; updateProgress(); renderPage(); return; }
-  const turn = stage.querySelector(".flip-turn");
-  const under = stage.querySelector(".flip-under");
-  const timg = turn.querySelector("img");
-  const uimg = under.querySelector("img");
-  const sh = turn.querySelector(".flip-sh");
-  flipAnimating = true;
+function getCurlImg(idx) {
+  if (idx < 0 || idx >= readerPages.length) return null;
+  let im = curlImgCache.get(idx);
+  if (!im) { im = new Image(); im.src = readerPages[idx]; curlImgCache.set(idx, im); }
+  return im;
+}
 
-  turn.style.transformOrigin = "left center";
-
-  if (dir > 0) {
-    // NEXT: reveal next beneath; current page swings away to the left
-    uimg.src = readerPages[next];
-    under.style.display = "block";
-    turn.style.transition = "none";
-    turn.style.transform = "rotateY(0deg)";
-    sh.style.opacity = "0";
-    requestAnimationFrame(() => {
-      turn.style.transition = `transform ${FLIP_DURATION}ms ease-in, opacity ${FLIP_DURATION}ms`;
-      turn.style.transform = "rotateY(-168deg)";
-      sh.style.opacity = "0.55";
+function initCurl(stage, canvas) {
+  if (rMode !== "flip") return;
+  curlCanvas = canvas;
+  curlCtx = canvas.getContext("2d");
+  resizeCurl();
+  getCurlImg(rPageIdx - 1); getCurlImg(rPageIdx); getCurlImg(rPageIdx + 1);
+  drawCurlStatic();
+  attachCurlGestures(canvas);
+  if (!curlResizeBound) {
+    curlResizeBound = true;
+    window.addEventListener("resize", () => {
+      if (rMode === "flip" && curlCanvas) { resizeCurl(); if (!curlBusy) drawCurlStatic(); }
     });
-    setTimeout(() => {
-      rPageIdx = next; updateProgress();
-      timg.src = readerPages[rPageIdx];
-      turn.style.transition = "none";
-      turn.style.transform = "rotateY(0deg)";
-      sh.style.opacity = "0";
-      under.style.display = "none";
-      flipAnimating = false;
-    }, FLIP_DURATION);
-  } else {
-    // PREV: previous page starts folded at the left and opens to cover
-    uimg.src = readerPages[rPageIdx];
-    under.style.display = "block";
-    timg.src = readerPages[next];
-    turn.style.transition = "none";
-    turn.style.transform = "rotateY(-168deg)";
-    sh.style.opacity = "0.55";
-    requestAnimationFrame(() => {
-      turn.style.transition = `transform ${FLIP_DURATION}ms ease-out, opacity ${FLIP_DURATION}ms`;
-      turn.style.transform = "rotateY(0deg)";
-      sh.style.opacity = "0";
-    });
-    setTimeout(() => {
-      rPageIdx = next; updateProgress();
-      under.style.display = "none";
-      flipAnimating = false;
-    }, FLIP_DURATION);
   }
 }
 
-function flipNextPage() { customFlip(1); }
-function flipPrevPage() { customFlip(-1); }
+function resizeCurl() {
+  if (!curlCanvas) return;
+  curlDpr = Math.min(2, window.devicePixelRatio || 1);
+  const r = curlCanvas.getBoundingClientRect();
+  curlCW = Math.max(1, Math.round(r.width * curlDpr));
+  curlCH = Math.max(1, Math.round(r.height * curlDpr));
+  curlCanvas.width = curlCW; curlCanvas.height = curlCH;
+  if (!curlOffA) { curlOffA = document.createElement("canvas"); curlOffB = document.createElement("canvas"); }
+  curlOffA.width = curlCW; curlOffA.height = curlCH;
+  curlOffB.width = curlCW; curlOffB.height = curlCH;
+}
 
-// Tap zones for flip mode. We detect a tap from touchstart/touchend WITHOUT
-// preventDefault/stopPropagation so it never interferes with swipe gestures.
-function attachFlipTapZones(host) {
-  let sx = 0, sy = 0, st = 0, moved = false, lastTap = 0;
+// Draw page `idx` into an offscreen canvas, contain-fitted on white.
+function renderPageToOff(off, idx, cb) {
+  const octx = off.getContext("2d");
+  const paint = () => {
+    octx.fillStyle = "#fff";
+    octx.fillRect(0, 0, curlCW, curlCH);
+    const im = getCurlImg(idx);
+    if (im && im.complete && im.naturalWidth) {
+      const iw = im.naturalWidth, ih = im.naturalHeight;
+      const scale = Math.min(curlCW / iw, curlCH / ih);
+      const w = iw * scale, h = ih * scale;
+      octx.drawImage(im, (curlCW - w) / 2, (curlCH - h) / 2, w, h);
+    }
+    if (cb) cb();
+  };
+  const im = getCurlImg(idx);
+  if (im && !(im.complete && im.naturalWidth)) { im.onload = paint; }
+  paint();
+}
 
-  const zone = (clientX) => {
-    const r = host.getBoundingClientRect();
+function drawCurlStatic() {
+  if (!curlCtx) return;
+  renderPageToOff(curlOffA, rPageIdx, () => {
+    curlCtx.clearRect(0, 0, curlCW, curlCH);
+    curlCtx.drawImage(curlOffA, 0, 0);
+  });
+}
+
+// One curl frame. foldX in [0,curlCW] = crease position.
+// topOff: page on top (flat left of crease + the curling strip).
+// botOff: page revealed to the right of the crease.
+function drawCurlFrame(foldX, topOff, botOff) {
+  const ctx = curlCtx;
+  if (!ctx) return;
+  const R = Math.max(10, curlCW * 0.085);
+  ctx.clearRect(0, 0, curlCW, curlCH);
+  ctx.drawImage(botOff, 0, 0);                                  // revealed page
+  if (foldX > 0.5) ctx.drawImage(topOff, 0, 0, foldX, curlCH, 0, 0, foldX, curlCH); // flat part
+
+  const step = Math.max(2, Math.round(curlDpr * 2));
+  for (let tt = 0; tt <= curlCW; tt += step) {
+    const theta = tt / R;
+    if (theta > Math.PI) break;
+    const srcX = foldX + tt;
+    if (srcX >= curlCW) break;
+    const screenX = foldX + R * Math.sin(theta);
+    if (screenX >= curlCW) continue;
+    const w = Math.max(0.9, step * Math.abs(Math.cos(theta)) + 0.7);
+    ctx.drawImage(topOff, srcX, 0, step, curlCH, screenX, 0, w, curlCH);
+    const shade = theta < Math.PI / 2
+      ? 0.16 * (theta / (Math.PI / 2))
+      : 0.16 + 0.5 * ((theta - Math.PI / 2) / (Math.PI / 2));
+    ctx.fillStyle = `rgba(0,0,0,${shade})`;
+    ctx.fillRect(screenX, 0, w + 0.6, curlCH);
+  }
+  // soft shadow the curl casts onto the page beneath
+  const peakX = foldX + R;
+  if (peakX < curlCW) {
+    const sg = ctx.createLinearGradient(peakX, 0, peakX + R * 1.3, 0);
+    sg.addColorStop(0, "rgba(0,0,0,0.20)");
+    sg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = sg;
+    ctx.fillRect(peakX, 0, R * 1.3, curlCH);
+  }
+}
+
+// Animate the crease from startFold to the end. dir:+1 next, -1 prev.
+function animateCurl(dir, startFold) {
+  if (curlBusy) return;
+  const next = rPageIdx + dir;
+  if (next < 0 || next >= readerPages.length) {
+    if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+    drawCurlStatic();
+    return;
+  }
+  curlBusy = true;
+  const topIdx = dir > 0 ? rPageIdx : next;
+  const botIdx = dir > 0 ? next : rPageIdx;
+  const fold0 = startFold != null ? startFold : (dir > 0 ? curlCW : 0);
+  const fold1 = dir > 0 ? 0 : curlCW;
+
+  renderPageToOff(curlOffA, topIdx);
+  renderPageToOff(curlOffB, botIdx);
+  const dur = 460;
+  const t0 = performance.now();
+  cancelAnimationFrame(curlRAF);
+  const tick = (now) => {
+    const p = Math.min(1, (now - t0) / dur);
+    const ease = 1 - Math.pow(1 - p, 3);
+    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB);
+    if (p < 1) { curlRAF = requestAnimationFrame(tick); }
+    else {
+      rPageIdx = next; updateProgress();
+      getCurlImg(rPageIdx - 1); getCurlImg(rPageIdx + 1);
+      drawCurlStatic();
+      curlBusy = false;
+    }
+  };
+  curlRAF = requestAnimationFrame(tick);
+}
+
+// Roll the crease back to closed without changing the page.
+function cancelCurl(dir, startFold) {
+  curlBusy = true;
+  const topIdx = dir > 0 ? rPageIdx : rPageIdx + dir;
+  const botIdx = dir > 0 ? rPageIdx + dir : rPageIdx;
+  renderPageToOff(curlOffA, topIdx);
+  renderPageToOff(curlOffB, botIdx);
+  const fold1 = dir > 0 ? curlCW : 0;
+  const dur = 220;
+  const t0 = performance.now();
+  cancelAnimationFrame(curlRAF);
+  const tick = (now) => {
+    const p = Math.min(1, (now - t0) / dur);
+    drawCurlFrame(startFold + (fold1 - startFold) * p, curlOffA, curlOffB);
+    if (p < 1) { curlRAF = requestAnimationFrame(tick); }
+    else { drawCurlStatic(); curlBusy = false; }
+  };
+  curlRAF = requestAnimationFrame(tick);
+}
+
+function flipNextPage() { if (!curlBusy) animateCurl(1); }
+function flipPrevPage() { if (!curlBusy) animateCurl(-1); }
+
+function attachCurlGestures(canvas) {
+  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0;
+
+  const tapZone = (clientX) => {
+    const r = canvas.getBoundingClientRect();
     const x = clientX - r.left;
     if (x < r.width * 0.30) flipPrevPage();
     else if (x > r.width * 0.70) flipNextPage();
     else toggleControls();
   };
 
-  host.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) { moved = true; return; }
-    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-    st = Date.now(); moved = false;
+  const foldFromDelta = (dx) => {
+    const d = dx * curlDpr;
+    return dir > 0
+      ? Math.max(0, Math.min(curlCW, curlCW + d))   // next: closed(CW) -> open(0)
+      : Math.max(0, Math.min(curlCW, d));            // prev: closed(0) -> covered(CW)
+  };
+
+  canvas.addEventListener("touchstart", (e) => {
+    if (curlBusy || e.touches.length !== 1) { dragging = false; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+    moved = false; dir = 0; dragging = true;
   }, { passive: true });
 
-  host.addEventListener("touchmove", (e) => {
-    if (e.touches.length && (Math.abs(e.touches[0].clientX - sx) > 10 || Math.abs(e.touches[0].clientY - sy) > 10)) {
+  canvas.addEventListener("touchmove", (e) => {
+    if (!dragging || e.touches.length !== 1) return;
+    const x = e.touches[0].clientX, y = e.touches[0].clientY;
+    const dx = x - sx, dy = y - sy;
+    if (!moved && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+      dir = dx < 0 ? 1 : -1;
+      if (rPageIdx + dir < 0 || rPageIdx + dir >= readerPages.length) { dragging = false; return; }
       moved = true;
+      renderPageToOff(curlOffA, dir > 0 ? rPageIdx : rPageIdx + dir);
+      renderPageToOff(curlOffB, dir > 0 ? rPageIdx + dir : rPageIdx);
     }
+    if (moved && dir !== 0) drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB);
   }, { passive: true });
 
-  host.addEventListener("touchend", () => {
-    if (moved || Date.now() - st > 300) return; // a drag/curl, not a tap
-    lastTap = Date.now();
-    zone(sx);
+  canvas.addEventListener("touchend", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    const dt = Date.now() - st;
+    if (!moved) { if (dt < 300) { lastTap = Date.now(); tapZone(sx); } return; }
+    const dx = e.changedTouches[0].clientX - sx;
+    const fold = foldFromDelta(dx);
+    const frac = fold / curlCW;
+    const flick = dt < 320 && Math.abs(dx) > 28;
+    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold) : cancelCurl(1, fold); }
+    else { (flick || frac > 0.38) ? animateCurl(-1, fold) : cancelCurl(-1, fold); }
   }, { passive: true });
 
-  // Desktop fallback (no touch); ignored right after a touch tap to avoid double-fire
-  host.addEventListener("click", (e) => {
+  canvas.addEventListener("click", (e) => {
     if (Date.now() - lastTap < 600) return;
-    zone(e.clientX);
+    tapZone(e.clientX);
   });
 }
 
 function destroyPageFlip() {
-  flipAnimating = false;
+  curlBusy = false;
+  if (curlRAF) cancelAnimationFrame(curlRAF);
+  curlCanvas = null; curlCtx = null;
+  curlImgCache.clear();
   readerImageZoomed = false;
 }
 
@@ -508,8 +623,9 @@ function initReaderGestures() {
   let sx = 0, sy = 0, st = 0, tracking = false;
 
   canvas.addEventListener("touchstart", (e) => {
-    // Swipe paging for click and flip modes; skip when zoomed or multi-touch.
-    if ((rMode !== "click" && rMode !== "flip") || readerImageZoomed || e.touches.length > 1) { tracking = false; return; }
+    // Click mode swipe. Flip mode has its own drag-curl on the canvas;
+    // slide/webtoon use native scroll. Skip when zoomed or multi-touch.
+    if (rMode !== "click" || readerImageZoomed || e.touches.length > 1) { tracking = false; return; }
     const tch = e.touches[0];
     sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true;
   }, { passive: true });
@@ -532,7 +648,7 @@ function initReaderGestures() {
 /* ===== PAGE NAVIGATION ===== */
 function flipPage(dir) {
   if (rMode === "flip") {
-    customFlip(dir);
+    animateCurl(dir);
     return;
   }
   const next = rPageIdx + dir;
@@ -556,8 +672,7 @@ function jumpPage(idx) {
     const img = document.querySelector(".r-page-img-box img");
     if (img) img.src = readerPages[rPageIdx];
   } else if (rMode === "flip") {
-    const timg = document.querySelector(".flip-turn img");
-    if (timg) timg.src = readerPages[rPageIdx];
+    drawCurlStatic();
   } else if (rMode === "slide") {
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;
