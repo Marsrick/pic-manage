@@ -8,6 +8,7 @@ let rAutoTimer = null;
 let rAutoSpeed = 3;
 let isFlipping = false;
 let readerImageZoomed = false;
+let pageFlipBook = null;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -398,14 +399,121 @@ function renderPage() {
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
     readerImageZoomed = false;
-    // Self-built Canvas page-curl: the turning page rolls onto a cylinder
-    // (per-column cylindrical deformation), following the finger.
-    const stage = document.createElement("div"); stage.className = "flip-stage"; stage.id = "flipStage";
-    const canvas = document.createElement("canvas"); canvas.className = "flip-canvas"; canvas.id = "flipCanvas";
-    stage.appendChild(canvas);
+    const stage = document.createElement("div"); stage.className = "pageflip-stage"; stage.id = "flipStage";
     container.appendChild(stage);
-    setTimeout(() => initCurl(stage, canvas), 30);
+    setTimeout(() => initPageFlip(stage), 30);
   }
+}
+
+/* ===== PAGE-FLIP LIBRARY MODE ===== */
+function initPageFlip(stage) {
+  if (rMode !== "flip" || !stage) return;
+  if (!window.St?.PageFlip) {
+    toast("翻页引擎加载失败", "error");
+    return;
+  }
+
+  const rect = stage.getBoundingClientRect();
+  const width = Math.max(260, Math.round(rect.width || window.innerWidth || 360));
+  const height = Math.max(360, Math.round(rect.height || window.innerHeight || 560));
+
+  pageFlipBook = new St.PageFlip(stage, {
+    width,
+    height,
+    size: "stretch",
+    minWidth: 260,
+    maxWidth: 1400,
+    minHeight: 360,
+    maxHeight: 2200,
+    startPage: rPageIdx,
+    showCover: false,
+    usePortrait: true,
+    drawShadow: true,
+    maxShadowOpacity: 0.42,
+    flippingTime: 620,
+    mobileScrollSupport: false,
+    swipeDistance: 24,
+    showPageCorners: true,
+    disableFlipByClick: true
+  });
+
+  pageFlipBook.on("flip", (e) => {
+    const idx = Number(e.data);
+    if (Number.isFinite(idx) && idx !== rPageIdx) {
+      rPageIdx = Math.max(0, Math.min(readerPages.length - 1, idx));
+      updateProgress();
+    }
+  });
+
+  const pages = readerPages.map((src, i) => {
+    const page = document.createElement("div");
+    page.className = "pageflip-page";
+    page.dataset.density = "soft";
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = `Page ${i + 1}`;
+    page.appendChild(img);
+    return page;
+  });
+
+  pageFlipBook.loadFromHTML(pages);
+  attachPageFlipTapZones(stage);
+}
+
+function destroyLibraryPageFlip() {
+  if (!pageFlipBook) return;
+  try { pageFlipBook.destroy(); } catch (_) {}
+  pageFlipBook = null;
+}
+
+function attachPageFlipTapZones(stage) {
+  let sx = 0, sy = 0, st = 0, mouseDown = false, lastTouchTap = 0;
+
+  const handleTap = (clientX, e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const r = stage.getBoundingClientRect();
+    const x = clientX - r.left;
+    if (x < r.width * 0.30) flipPage(-1);
+    else if (x > r.width * 0.70) flipPage(1);
+    else toggleControls();
+  };
+
+  stage.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    st = Date.now();
+  }, { passive: true, capture: true });
+
+  stage.addEventListener("touchend", (e) => {
+    if (!e.changedTouches.length) return;
+    const t0 = e.changedTouches[0];
+    const dx = Math.abs(t0.clientX - sx);
+    const dy = Math.abs(t0.clientY - sy);
+    if (Date.now() - st < 360 && dx < 12 && dy < 12) {
+      lastTouchTap = Date.now();
+      handleTap(t0.clientX, e);
+    }
+  }, { passive: false, capture: true });
+
+  stage.addEventListener("mousedown", (e) => {
+    if (Date.now() - lastTouchTap < 600) return;
+    mouseDown = true;
+    sx = e.clientX;
+    sy = e.clientY;
+    st = Date.now();
+  }, true);
+
+  stage.addEventListener("mouseup", (e) => {
+    if (!mouseDown || Date.now() - lastTouchTap < 600) return;
+    mouseDown = false;
+    const dx = Math.abs(e.clientX - sx);
+    const dy = Math.abs(e.clientY - sy);
+    if (Date.now() - st < 360 && dx < 8 && dy < 8) handleTap(e.clientX, e);
+  }, true);
 }
 
 /* ===== SELF-BUILT SINGLE-PAGE FLIP ===== */
@@ -491,22 +599,34 @@ function drawCurlStatic() {
   });
 }
 
-// One curl frame. foldX in [0,curlCW] = average crease position.
-// Keep the page body continuous; realism comes from a curved crease mask,
-// cylindrical column mapping, highlights and cast shadows.
-function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.72) {
+function creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX) {
+  ctx.moveTo(mapX(topFold), 0);
+  ctx.bezierCurveTo(
+    mapX(midFold + curve * 0.25), curlCH * 0.28,
+    mapX(midFold - curve * 0.38), curlCH * 0.72,
+    mapX(bottomFold), curlCH
+  );
+}
+
+function drawPaperBackCurl(foldX, topOff, botOff, touchYRatio = 0.72, curlTilt = 0, side = 1) {
   const ctx = curlCtx;
   if (!ctx) return;
   foldX = clampRange(foldX, 0, curlCW);
   touchYRatio = clampRange(touchYRatio || 0.72, 0.12, 0.88);
-  const progress = dir > 0 ? 1 - foldX / curlCW : foldX / curlCW;
+  const progress = clampRange(1 - foldX / curlCW, 0, 1);
   const live = Math.sin(clampRange(progress, 0, 1) * Math.PI);
-  const radius = Math.max(18 * curlDpr, curlCW * (0.07 + 0.025 * (1 - Math.abs(progress - 0.5) * 2)));
-  const step = Math.max(2, Math.round(curlDpr * 2.2));
-  const curve = curlCW * (0.035 + 0.025 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * live;
-  const topFold = clampRange(foldX - curve * (0.65 + touchYRatio * 0.25), 0, curlCW);
-  const midFold = clampRange(foldX + curve * (0.25 - (touchYRatio - 0.5) * 0.3), 0, curlCW);
-  const bottomFold = clampRange(foldX + curve * (0.85 + (0.5 - touchYRatio) * 0.3), 0, curlCW);
+  const yAnchor = curlCH * touchYRatio;
+  const tilt = clampRange(curlTilt + (touchYRatio - 0.5) * 0.18, -0.28, 0.28) * (0.18 + live * 0.82);
+  const curve = curlCW * (0.024 + 0.018 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * live;
+  const creaseAt = (y, bias = 0) => foldX + tilt * (y - yAnchor) + bias;
+  const topFold = creaseAt(0, -curve * 0.52);
+  const midFold = creaseAt(curlCH * 0.5, curve * 0.12);
+  const bottomFold = creaseAt(curlCH, curve * 0.50);
+  const outerTopX = curlCW - curve * 0.18;
+  const outerBottomX = curlCW - curve * 0.42;
+  const mapX = (x) => side > 0 ? x : curlCW - x;
+  const edgeX = side > 0 ? curlCW : 0;
+  const farX = side > 0 ? 0 : curlCW;
 
   ctx.clearRect(0, 0, curlCW, curlCH);
   ctx.drawImage(botOff, 0, 0);
@@ -514,83 +634,88 @@ function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.72) {
   if (foldX > 0.5 || live > 0.01) {
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(topFold, 0);
-    ctx.bezierCurveTo(
-      midFold + curve * 0.25, curlCH * 0.28,
-      midFold - curve * 0.38, curlCH * 0.72,
-      bottomFold, curlCH
-    );
-    ctx.lineTo(0, curlCH);
+    ctx.moveTo(farX, 0);
+    ctx.lineTo(mapX(topFold), 0);
+    creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
+    ctx.lineTo(farX, curlCH);
     ctx.closePath();
     ctx.clip();
     ctx.drawImage(topOff, 0, 0);
     ctx.restore();
   }
 
-  const maxT = Math.min(curlCW - foldX, Math.PI * radius);
-  for (let tt = 0; tt <= maxT; tt += step) {
-    const theta = tt / radius;
-    const srcX = foldX + tt;
-    if (srcX >= curlCW) break;
-    const srcW = Math.min(step, curlCW - srcX);
-    const curlDepth = Math.sin(theta);
-    const screenX = foldX + radius * curlDepth + curve * 0.16 * curlDepth;
-    if (screenX >= curlCW) continue;
-    const destW = Math.max(1, srcW * Math.abs(Math.cos(theta)) + 0.75);
+  ctx.save();
+  ctx.beginPath();
+  creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
+  ctx.bezierCurveTo(
+    mapX(outerBottomX) + side * curlCW * 0.018, curlCH * 0.82,
+    edgeX, curlCH * 0.94,
+    edgeX, curlCH
+  );
+  ctx.lineTo(edgeX, 0);
+  ctx.bezierCurveTo(
+    edgeX, curlCH * 0.06,
+    mapX(outerTopX) + side * curlCW * 0.014, curlCH * 0.18,
+    mapX(topFold), 0
+  );
+  ctx.closePath();
+  ctx.clip();
 
-    ctx.drawImage(topOff, srcX, 0, srcW, curlCH, screenX, 0, destW, curlCH);
+  ctx.fillStyle = "#f7f4e8";
+  ctx.fillRect(0, 0, curlCW, curlCH);
 
-    const back = smoothstep(Math.PI * 0.50, Math.PI, theta);
-    if (back > 0) {
-      ctx.fillStyle = `rgba(255,255,255,${back * (0.28 + live * 0.10)})`;
-      ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
-    }
+  const paperGrad = ctx.createLinearGradient(mapX(foldX), 0, edgeX, 0);
+  paperGrad.addColorStop(0, `rgba(0,0,0,${0.18 + live * 0.12})`);
+  paperGrad.addColorStop(0.12, `rgba(255,255,255,${0.46 + live * 0.16})`);
+  paperGrad.addColorStop(0.55, "rgba(255,255,255,0.14)");
+  paperGrad.addColorStop(1, `rgba(0,0,0,${0.10 + live * 0.08})`);
+  ctx.fillStyle = paperGrad;
+  ctx.fillRect(Math.min(topFold, bottomFold) - 8, 0, curlCW, curlCH);
 
-    const highlight = Math.exp(-Math.pow(theta - 0.42, 2) / 0.035) * (0.12 + live * 0.08);
-    if (highlight > 0.01) {
-      ctx.fillStyle = `rgba(255,255,255,${highlight})`;
-      ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
-    }
+  const grain = ctx.createLinearGradient(0, 0, curlCW, curlCH);
+  grain.addColorStop(0, "rgba(255,255,255,0.18)");
+  grain.addColorStop(0.5, "rgba(255,255,255,0)");
+  grain.addColorStop(1, "rgba(0,0,0,0.06)");
+  ctx.fillStyle = grain;
+  ctx.fillRect(0, 0, curlCW, curlCH);
+  ctx.restore();
 
-    const shade = theta < Math.PI / 2
-      ? 0.09 * (theta / (Math.PI / 2))
-      : 0.13 + 0.48 * ((theta - Math.PI / 2) / (Math.PI / 2));
-    ctx.fillStyle = `rgba(0,0,0,${shade * (0.80 + live * 0.20)})`;
-    ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
-  }
-
-  const peakX = foldX + radius * (0.86 + live * 0.12);
-  if (peakX < curlCW) {
-    const sg = ctx.createLinearGradient(peakX, 0, peakX + radius * 1.45, 0);
-    sg.addColorStop(0, `rgba(0,0,0,${0.15 + live * 0.14})`);
-    sg.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = sg;
-    ctx.fillRect(peakX, 0, radius * 1.45, curlCH);
-  }
+  const shadowW = Math.max(20 * curlDpr, curlCW * (0.08 + live * 0.05));
+  const shadowStart = mapX(foldX);
+  const sg = ctx.createLinearGradient(shadowStart, 0, shadowStart + side * shadowW, 0);
+  sg.addColorStop(0, `rgba(0,0,0,${0.20 + live * 0.16})`);
+  sg.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sg;
+  if (side > 0) ctx.fillRect(shadowStart, 0, shadowW, curlCH);
+  else ctx.fillRect(shadowStart - shadowW, 0, shadowW, curlCH);
 
   if (foldX > 0.5 || live > 0.01) {
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(topFold, 0);
-    ctx.bezierCurveTo(
-      midFold + curve * 0.25, curlCH * 0.28,
-      midFold - curve * 0.38, curlCH * 0.72,
-      bottomFold, curlCH
-    );
-    ctx.lineWidth = Math.max(1.2, curlDpr * 1.4);
-    ctx.strokeStyle = `rgba(0,0,0,${0.12 + live * 0.12})`;
+    creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
+    ctx.lineWidth = Math.max(1.4, curlDpr * 1.55);
+    ctx.strokeStyle = `rgba(0,0,0,${0.12 + live * 0.13})`;
     ctx.stroke();
-    ctx.lineWidth = Math.max(0.8, curlDpr);
-    ctx.strokeStyle = `rgba(255,255,255,${0.20 + live * 0.16})`;
-    ctx.translate(Math.max(1, curlDpr * 1.6), 0);
+    ctx.lineWidth = Math.max(0.8, curlDpr * 0.95);
+    ctx.strokeStyle = `rgba(255,255,255,${0.28 + live * 0.20})`;
+    ctx.translate(side * Math.max(1, curlDpr * 1.4), 0);
     ctx.stroke();
     ctx.restore();
   }
 }
 
+// One page-turn frame. The raised page is paper back only, not distorted comic
+// content. Prev-page turns are mirrored so the same geometry stays stable.
+function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.72, curlTilt = 0) {
+  if (dir < 0) {
+    drawPaperBackCurl(curlCW - foldX, topOff, botOff, touchYRatio, -curlTilt, -1);
+    return;
+  }
+  drawPaperBackCurl(foldX, topOff, botOff, touchYRatio, curlTilt, 1);
+}
+
 // Animate the crease from startFold to the end. dir:+1 next, -1 prev.
-function animateCurl(dir, startFold, touchYRatio = 0.72) {
+function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
   if (curlBusy) return;
   const next = rPageIdx + dir;
   if (next < 0 || next >= readerPages.length) {
@@ -613,7 +738,7 @@ function animateCurl(dir, startFold, touchYRatio = 0.72) {
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
     const ease = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio);
+    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - p * 0.35));
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else {
       rPageIdx = next; updateProgress();
@@ -626,7 +751,7 @@ function animateCurl(dir, startFold, touchYRatio = 0.72) {
 }
 
 // Roll the crease back to closed without changing the page.
-function cancelCurl(dir, startFold, touchYRatio = 0.72) {
+function cancelCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
   curlBusy = true;
   const topIdx = dir > 0 ? rPageIdx : rPageIdx + dir;
   const botIdx = dir > 0 ? rPageIdx + dir : rPageIdx;
@@ -640,7 +765,7 @@ function cancelCurl(dir, startFold, touchYRatio = 0.72) {
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
     const ease = 1 - Math.pow(1 - p, 3);
-    drawCurlFrame(startFold + (fold1 - startFold) * ease, curlOffA, curlOffB, dir, touchYRatio);
+    drawCurlFrame(startFold + (fold1 - startFold) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - p));
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else { drawCurlStatic(); curlBusy = false; }
   };
@@ -651,7 +776,7 @@ function flipNextPage() { if (!curlBusy) animateCurl(1); }
 function flipPrevPage() { if (!curlBusy) animateCurl(-1); }
 
 function attachCurlGestures(canvas) {
-  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72;
+  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72, curlTilt = 0;
 
   const tapZone = (clientX) => {
     const r = canvas.getBoundingClientRect();
@@ -673,7 +798,7 @@ function attachCurlGestures(canvas) {
     const r = canvas.getBoundingClientRect();
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
     touchYRatio = clampRange((sy - r.top) / Math.max(1, r.height), 0.12, 0.88);
-    moved = false; dir = 0; dragging = true;
+    moved = false; dir = 0; dragging = true; curlTilt = 0;
   }, { passive: true });
 
   canvas.addEventListener("touchmove", (e) => {
@@ -689,7 +814,12 @@ function attachCurlGestures(canvas) {
     }
     if (moved && dir !== 0) {
       e.preventDefault();
-      drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB, dir, touchYRatio);
+      const r = canvas.getBoundingClientRect();
+      const liveTouchY = clampRange((y - r.top) / Math.max(1, r.height), 0.10, 0.90);
+      touchYRatio = touchYRatio * 0.68 + liveTouchY * 0.32;
+      const dragSlope = dy / Math.max(60, Math.abs(dx) * 1.15);
+      curlTilt = clampRange(dragSlope * 0.22, -0.24, 0.24);
+      drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB, dir, touchYRatio, curlTilt);
     }
   }, { passive: false });
 
@@ -702,8 +832,8 @@ function attachCurlGestures(canvas) {
     const fold = foldFromDelta(dx);
     const frac = fold / curlCW;
     const flick = dt < 320 && Math.abs(dx) > 28;
-    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold, touchYRatio) : cancelCurl(1, fold, touchYRatio); }
-    else { (flick || frac > 0.38) ? animateCurl(-1, fold, touchYRatio) : cancelCurl(-1, fold, touchYRatio); }
+    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
+    else { (flick || frac > 0.38) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
   }, { passive: true });
 
   canvas.addEventListener("click", (e) => {
@@ -713,6 +843,7 @@ function attachCurlGestures(canvas) {
 }
 
 function destroyPageFlip() {
+  destroyLibraryPageFlip();
   cancelClickSlide(true);
   curlBusy = false;
   if (curlRAF) cancelAnimationFrame(curlRAF);
@@ -904,7 +1035,15 @@ function initReaderGestures() {
 /* ===== PAGE NAVIGATION ===== */
 function flipPage(dir) {
   if (rMode === "flip") {
-    animateCurl(dir);
+    if (!pageFlipBook) return;
+    const next = rPageIdx + dir;
+    if (next < 0 || next >= readerPages.length) {
+      if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+      return;
+    }
+    rPageIdx = next;
+    updateProgress();
+    pageFlipBook.turnToPage(next);
     return;
   }
   const next = rPageIdx + dir;
@@ -933,7 +1072,7 @@ function jumpPage(idx) {
     const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
     if (img) img.src = readerPages[rPageIdx];
   } else if (rMode === "flip") {
-    drawCurlStatic();
+    if (pageFlipBook) pageFlipBook.turnToPage(rPageIdx);
   } else if (rMode === "slide") {
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;

@@ -1431,13 +1431,40 @@ html, body {
   background: #000;
 }
 
-/* Self-built Canvas page-curl */
+/* Library-backed page flip */
+.pageflip-stage,
 .flip-stage {
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
   background: #fff;
+}
+.pageflip-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.pageflip-stage .stf__parent,
+.pageflip-stage .stf__wrapper,
+.pageflip-stage .stf__block,
+.pageflip-stage canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+.pageflip-page {
+  background: #fff;
+  overflow: hidden;
+}
+.pageflip-page img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #fff;
+  pointer-events: none;
+  user-select: none;
 }
 .flip-canvas {
   display: block;
