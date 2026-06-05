@@ -347,15 +347,18 @@ function renderPage() {
   if (rMode === "click") {
     readerImageZoomed = false;
     const wrap = document.createElement("div"); wrap.className = "reader-page-wrap";
-    const box = document.createElement("div"); box.className = "r-page-img-box";
-    const img = document.createElement("img"); img.src = readerPages[rPageIdx]; img.alt = `Page ${rPageIdx+1}`;
+    const box = document.createElement("div"); box.className = "r-page-img-box r-swipe-box";
+    const img = document.createElement("img");
+    img.className = "r-click-page current";
+    img.src = readerPages[rPageIdx];
+    img.alt = `Page ${rPageIdx+1}`;
 
     const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
-    tapL.onclick = e => { e.stopPropagation(); if (!readerImageZoomed) flipPage(-1); };
+    tapL.onclick = e => { e.stopPropagation(); if (!readerImageZoomed && !ignoreClickSwipeTap()) flipPage(-1); };
     const tapR = document.createElement("div"); tapR.className = "r-tap-zone r-tap-right";
-    tapR.onclick = e => { e.stopPropagation(); if (!readerImageZoomed) flipPage(1); };
+    tapR.onclick = e => { e.stopPropagation(); if (!readerImageZoomed && !ignoreClickSwipeTap()) flipPage(1); };
 
-    box.onclick = () => { if (!readerImageZoomed) toggleControls(); };
+    box.onclick = () => { if (!readerImageZoomed && !ignoreClickSwipeTap()) toggleControls(); };
     box.appendChild(img); box.appendChild(tapL); box.appendChild(tapR);
     wrap.appendChild(box); container.appendChild(wrap);
 
@@ -415,6 +418,15 @@ let curlBusy = false;
 let curlRAF = null;
 let curlResizeBound = false;
 
+function clampRange(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = clampRange((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 function getCurlImg(idx) {
   if (idx < 0 || idx >= readerPages.length) return null;
   let im = curlImgCache.get(idx);
@@ -440,11 +452,12 @@ function initCurl(stage, canvas) {
 
 function resizeCurl() {
   if (!curlCanvas) return;
-  curlDpr = Math.min(2, window.devicePixelRatio || 1);
+  curlDpr = Math.min(1.85, window.devicePixelRatio || 1);
   const r = curlCanvas.getBoundingClientRect();
   curlCW = Math.max(1, Math.round(r.width * curlDpr));
   curlCH = Math.max(1, Math.round(r.height * curlDpr));
   curlCanvas.width = curlCW; curlCanvas.height = curlCH;
+  if (curlCtx) curlCtx.imageSmoothingEnabled = true;
   if (!curlOffA) { curlOffA = document.createElement("canvas"); curlOffB = document.createElement("canvas"); }
   curlOffA.width = curlCW; curlOffA.height = curlCH;
   curlOffB.width = curlCW; curlOffB.height = curlCH;
@@ -478,46 +491,106 @@ function drawCurlStatic() {
   });
 }
 
-// One curl frame. foldX in [0,curlCW] = crease position.
-// topOff: page on top (flat left of crease + the curling strip).
-// botOff: page revealed to the right of the crease.
-function drawCurlFrame(foldX, topOff, botOff) {
+// One curl frame. foldX in [0,curlCW] = average crease position.
+// Keep the page body continuous; realism comes from a curved crease mask,
+// cylindrical column mapping, highlights and cast shadows.
+function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.72) {
   const ctx = curlCtx;
   if (!ctx) return;
-  const R = Math.max(10, curlCW * 0.085);
-  ctx.clearRect(0, 0, curlCW, curlCH);
-  ctx.drawImage(botOff, 0, 0);                                  // revealed page
-  if (foldX > 0.5) ctx.drawImage(topOff, 0, 0, foldX, curlCH, 0, 0, foldX, curlCH); // flat part
+  foldX = clampRange(foldX, 0, curlCW);
+  touchYRatio = clampRange(touchYRatio || 0.72, 0.12, 0.88);
+  const progress = dir > 0 ? 1 - foldX / curlCW : foldX / curlCW;
+  const live = Math.sin(clampRange(progress, 0, 1) * Math.PI);
+  const radius = Math.max(18 * curlDpr, curlCW * (0.07 + 0.025 * (1 - Math.abs(progress - 0.5) * 2)));
+  const step = Math.max(2, Math.round(curlDpr * 2.2));
+  const curve = curlCW * (0.035 + 0.025 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * live;
+  const topFold = clampRange(foldX - curve * (0.65 + touchYRatio * 0.25), 0, curlCW);
+  const midFold = clampRange(foldX + curve * (0.25 - (touchYRatio - 0.5) * 0.3), 0, curlCW);
+  const bottomFold = clampRange(foldX + curve * (0.85 + (0.5 - touchYRatio) * 0.3), 0, curlCW);
 
-  const step = Math.max(2, Math.round(curlDpr * 2));
-  for (let tt = 0; tt <= curlCW; tt += step) {
-    const theta = tt / R;
-    if (theta > Math.PI) break;
+  ctx.clearRect(0, 0, curlCW, curlCH);
+  ctx.drawImage(botOff, 0, 0);
+
+  if (foldX > 0.5 || live > 0.01) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(topFold, 0);
+    ctx.bezierCurveTo(
+      midFold + curve * 0.25, curlCH * 0.28,
+      midFold - curve * 0.38, curlCH * 0.72,
+      bottomFold, curlCH
+    );
+    ctx.lineTo(0, curlCH);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(topOff, 0, 0);
+    ctx.restore();
+  }
+
+  const maxT = Math.min(curlCW - foldX, Math.PI * radius);
+  for (let tt = 0; tt <= maxT; tt += step) {
+    const theta = tt / radius;
     const srcX = foldX + tt;
     if (srcX >= curlCW) break;
-    const screenX = foldX + R * Math.sin(theta);
+    const srcW = Math.min(step, curlCW - srcX);
+    const curlDepth = Math.sin(theta);
+    const screenX = foldX + radius * curlDepth + curve * 0.16 * curlDepth;
     if (screenX >= curlCW) continue;
-    const w = Math.max(0.9, step * Math.abs(Math.cos(theta)) + 0.7);
-    ctx.drawImage(topOff, srcX, 0, step, curlCH, screenX, 0, w, curlCH);
+    const destW = Math.max(1, srcW * Math.abs(Math.cos(theta)) + 0.75);
+
+    ctx.drawImage(topOff, srcX, 0, srcW, curlCH, screenX, 0, destW, curlCH);
+
+    const back = smoothstep(Math.PI * 0.50, Math.PI, theta);
+    if (back > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${back * (0.28 + live * 0.10)})`;
+      ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
+    }
+
+    const highlight = Math.exp(-Math.pow(theta - 0.42, 2) / 0.035) * (0.12 + live * 0.08);
+    if (highlight > 0.01) {
+      ctx.fillStyle = `rgba(255,255,255,${highlight})`;
+      ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
+    }
+
     const shade = theta < Math.PI / 2
-      ? 0.16 * (theta / (Math.PI / 2))
-      : 0.16 + 0.5 * ((theta - Math.PI / 2) / (Math.PI / 2));
-    ctx.fillStyle = `rgba(0,0,0,${shade})`;
-    ctx.fillRect(screenX, 0, w + 0.6, curlCH);
+      ? 0.09 * (theta / (Math.PI / 2))
+      : 0.13 + 0.48 * ((theta - Math.PI / 2) / (Math.PI / 2));
+    ctx.fillStyle = `rgba(0,0,0,${shade * (0.80 + live * 0.20)})`;
+    ctx.fillRect(screenX, 0, destW + 0.8, curlCH);
   }
-  // soft shadow the curl casts onto the page beneath
-  const peakX = foldX + R;
+
+  const peakX = foldX + radius * (0.86 + live * 0.12);
   if (peakX < curlCW) {
-    const sg = ctx.createLinearGradient(peakX, 0, peakX + R * 1.3, 0);
-    sg.addColorStop(0, "rgba(0,0,0,0.20)");
+    const sg = ctx.createLinearGradient(peakX, 0, peakX + radius * 1.45, 0);
+    sg.addColorStop(0, `rgba(0,0,0,${0.15 + live * 0.14})`);
     sg.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = sg;
-    ctx.fillRect(peakX, 0, R * 1.3, curlCH);
+    ctx.fillRect(peakX, 0, radius * 1.45, curlCH);
+  }
+
+  if (foldX > 0.5 || live > 0.01) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(topFold, 0);
+    ctx.bezierCurveTo(
+      midFold + curve * 0.25, curlCH * 0.28,
+      midFold - curve * 0.38, curlCH * 0.72,
+      bottomFold, curlCH
+    );
+    ctx.lineWidth = Math.max(1.2, curlDpr * 1.4);
+    ctx.strokeStyle = `rgba(0,0,0,${0.12 + live * 0.12})`;
+    ctx.stroke();
+    ctx.lineWidth = Math.max(0.8, curlDpr);
+    ctx.strokeStyle = `rgba(255,255,255,${0.20 + live * 0.16})`;
+    ctx.translate(Math.max(1, curlDpr * 1.6), 0);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
 // Animate the crease from startFold to the end. dir:+1 next, -1 prev.
-function animateCurl(dir, startFold) {
+function animateCurl(dir, startFold, touchYRatio = 0.72) {
   if (curlBusy) return;
   const next = rPageIdx + dir;
   if (next < 0 || next >= readerPages.length) {
@@ -533,13 +606,14 @@ function animateCurl(dir, startFold) {
 
   renderPageToOff(curlOffA, topIdx);
   renderPageToOff(curlOffB, botIdx);
-  const dur = 460;
+  const dist = Math.abs(fold1 - fold0) / Math.max(1, curlCW);
+  const dur = Math.max(220, 520 * dist);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
-    const ease = 1 - Math.pow(1 - p, 3);
-    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB);
+    const ease = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio);
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else {
       rPageIdx = next; updateProgress();
@@ -552,19 +626,21 @@ function animateCurl(dir, startFold) {
 }
 
 // Roll the crease back to closed without changing the page.
-function cancelCurl(dir, startFold) {
+function cancelCurl(dir, startFold, touchYRatio = 0.72) {
   curlBusy = true;
   const topIdx = dir > 0 ? rPageIdx : rPageIdx + dir;
   const botIdx = dir > 0 ? rPageIdx + dir : rPageIdx;
   renderPageToOff(curlOffA, topIdx);
   renderPageToOff(curlOffB, botIdx);
   const fold1 = dir > 0 ? curlCW : 0;
-  const dur = 220;
+  const dist = Math.abs(fold1 - startFold) / Math.max(1, curlCW);
+  const dur = Math.max(140, 260 * dist);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
-    drawCurlFrame(startFold + (fold1 - startFold) * p, curlOffA, curlOffB);
+    const ease = 1 - Math.pow(1 - p, 3);
+    drawCurlFrame(startFold + (fold1 - startFold) * ease, curlOffA, curlOffB, dir, touchYRatio);
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else { drawCurlStatic(); curlBusy = false; }
   };
@@ -575,7 +651,7 @@ function flipNextPage() { if (!curlBusy) animateCurl(1); }
 function flipPrevPage() { if (!curlBusy) animateCurl(-1); }
 
 function attachCurlGestures(canvas) {
-  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0;
+  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72;
 
   const tapZone = (clientX) => {
     const r = canvas.getBoundingClientRect();
@@ -594,7 +670,9 @@ function attachCurlGestures(canvas) {
 
   canvas.addEventListener("touchstart", (e) => {
     if (curlBusy || e.touches.length !== 1) { dragging = false; return; }
+    const r = canvas.getBoundingClientRect();
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+    touchYRatio = clampRange((sy - r.top) / Math.max(1, r.height), 0.12, 0.88);
     moved = false; dir = 0; dragging = true;
   }, { passive: true });
 
@@ -609,8 +687,11 @@ function attachCurlGestures(canvas) {
       renderPageToOff(curlOffA, dir > 0 ? rPageIdx : rPageIdx + dir);
       renderPageToOff(curlOffB, dir > 0 ? rPageIdx + dir : rPageIdx);
     }
-    if (moved && dir !== 0) drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB);
-  }, { passive: true });
+    if (moved && dir !== 0) {
+      e.preventDefault();
+      drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB, dir, touchYRatio);
+    }
+  }, { passive: false });
 
   canvas.addEventListener("touchend", (e) => {
     if (!dragging) return;
@@ -621,8 +702,8 @@ function attachCurlGestures(canvas) {
     const fold = foldFromDelta(dx);
     const frac = fold / curlCW;
     const flick = dt < 320 && Math.abs(dx) > 28;
-    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold) : cancelCurl(1, fold); }
-    else { (flick || frac > 0.38) ? animateCurl(-1, fold) : cancelCurl(-1, fold); }
+    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold, touchYRatio) : cancelCurl(1, fold, touchYRatio); }
+    else { (flick || frac > 0.38) ? animateCurl(-1, fold, touchYRatio) : cancelCurl(-1, fold, touchYRatio); }
   }, { passive: true });
 
   canvas.addEventListener("click", (e) => {
@@ -632,11 +713,127 @@ function attachCurlGestures(canvas) {
 }
 
 function destroyPageFlip() {
+  cancelClickSlide(true);
   curlBusy = false;
   if (curlRAF) cancelAnimationFrame(curlRAF);
   curlCanvas = null; curlCtx = null;
   curlImgCache.clear();
   readerImageZoomed = false;
+}
+
+/* ===== CLICK-MODE FINGER-FOLLOW SLIDE ===== */
+let clickSlideRAF = null;
+let clickSlideBusy = false;
+let clickSwipeLastTouch = 0;
+
+function ignoreClickSwipeTap() {
+  return Date.now() - clickSwipeLastTouch < 450;
+}
+
+function getClickBox() {
+  return document.querySelector(".r-swipe-box");
+}
+
+function getClickCurrentImg() {
+  return document.querySelector(".r-swipe-box .r-click-page.current");
+}
+
+function setClickSlideOffset(state, offset) {
+  if (!state || !state.current || !state.incoming) return;
+  state.offset = offset;
+  const incomingX = offset + state.dir * state.width;
+  const progress = Math.min(1, Math.abs(offset) / Math.max(1, state.width));
+  state.current.style.transition = "none";
+  state.incoming.style.transition = "none";
+  state.current.style.transform = `translate3d(${offset}px,0,0)`;
+  state.incoming.style.transform = `translate3d(${incomingX}px,0,0)`;
+  state.current.style.filter = `brightness(${1 - progress * 0.045})`;
+  state.incoming.style.filter = `drop-shadow(${-state.dir * 18}px 0 22px rgba(0,0,0,${0.12 + progress * 0.14}))`;
+}
+
+function prepareClickSlide(dir) {
+  const next = rPageIdx + dir;
+  if (next < 0 || next >= readerPages.length) return null;
+  const box = getClickBox();
+  const current = getClickCurrentImg();
+  if (!box || !current) return null;
+
+  if (current._resetZoom) current._resetZoom();
+  readerImageZoomed = false;
+  current.style.transition = "none";
+
+  box.querySelectorAll(".r-click-page.incoming").forEach(el => el.remove());
+  const incoming = document.createElement("img");
+  incoming.className = "r-click-page incoming";
+  incoming.src = readerPages[next];
+  incoming.alt = `Page ${next + 1}`;
+  incoming.style.transition = "none";
+  box.appendChild(incoming);
+
+  const state = {
+    box,
+    current,
+    incoming,
+    dir,
+    next,
+    width: Math.max(1, box.clientWidth || window.innerWidth || 1),
+    offset: 0
+  };
+  setClickSlideOffset(state, 0);
+  return state;
+}
+
+function finishClickSlide(state, commit) {
+  if (!state) return;
+  if (commit) {
+    rPageIdx = state.next;
+    updateProgress();
+    state.current.src = readerPages[rPageIdx];
+  }
+  state.current.style.transition = "none";
+  state.current.style.transform = "translate3d(0,0,0)";
+  state.current.style.filter = "";
+  if (state.incoming) state.incoming.remove();
+  clickSlideBusy = false;
+}
+
+function cancelClickSlide(resetOnly) {
+  if (clickSlideRAF) cancelAnimationFrame(clickSlideRAF);
+  clickSlideRAF = null;
+  clickSlideBusy = false;
+  const current = getClickCurrentImg();
+  if (current) {
+    current.style.transition = "none";
+    current.style.transform = "translate3d(0,0,0)";
+    current.style.filter = "";
+  }
+  document.querySelectorAll(".r-swipe-box .r-click-page.incoming").forEach(el => el.remove());
+  if (!resetOnly) readerImageZoomed = false;
+}
+
+function animateClickSlide(dir, startOffset = 0, commit = true, state = null) {
+  if (clickSlideBusy) return false;
+  const slide = state || prepareClickSlide(dir);
+  if (!slide) return false;
+  clickSlideBusy = true;
+  const endOffset = commit ? -dir * slide.width : 0;
+  const dist = Math.abs(endOffset - startOffset) / Math.max(1, slide.width);
+  const dur = Math.max(130, Math.min(320, 120 + dist * 260));
+  const t0 = performance.now();
+  cancelAnimationFrame(clickSlideRAF);
+
+  const tick = (now) => {
+    const p = Math.min(1, (now - t0) / dur);
+    const ease = 1 - Math.pow(1 - p, 3);
+    setClickSlideOffset(slide, startOffset + (endOffset - startOffset) * ease);
+    if (p < 1) clickSlideRAF = requestAnimationFrame(tick);
+    else {
+      clickSlideRAF = null;
+      finishClickSlide(slide, commit);
+    }
+  };
+  clickSlideRAF = requestAnimationFrame(tick);
+  return true;
 }
 
 /* ===== SWIPE GESTURES ===== */
@@ -646,15 +843,38 @@ function initReaderGestures() {
   readerGesturesBound = true;
   const canvas = document.getElementById("readerCanvas");
   if (!canvas) return;
-  let sx = 0, sy = 0, st = 0, tracking = false;
+  let sx = 0, sy = 0, st = 0, tracking = false, moved = false;
+  let slideDir = 0, slideState = null, slideOffset = 0;
 
   canvas.addEventListener("touchstart", (e) => {
     // Click mode swipe. Flip mode has its own drag-curl on the canvas;
     // slide/webtoon use native scroll. Skip when zoomed or multi-touch.
-    if (rMode !== "click" || readerImageZoomed || e.touches.length > 1) { tracking = false; return; }
+    if (rMode !== "click" || readerImageZoomed || clickSlideBusy || e.touches.length > 1) { tracking = false; return; }
     const tch = e.touches[0];
-    sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true;
+    sx = tch.clientX; sy = tch.clientY; st = Date.now(); tracking = true; moved = false;
+    slideDir = 0; slideState = null; slideOffset = 0;
   }, { passive: true });
+
+  canvas.addEventListener("touchmove", (e) => {
+    if (!tracking || e.touches.length !== 1) return;
+    const tch = e.touches[0];
+    const dx = tch.clientX - sx;
+    const dy = tch.clientY - sy;
+
+    if (!moved) {
+      if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+      slideDir = dx < 0 ? 1 : -1;
+      slideState = prepareClickSlide(slideDir);
+      if (!slideState) { tracking = false; return; }
+      moved = true;
+    }
+
+    e.preventDefault();
+    slideOffset = slideDir > 0
+      ? clampRange(dx, -slideState.width, 0)
+      : clampRange(dx, 0, slideState.width);
+    setClickSlideOffset(slideState, slideOffset);
+  }, { passive: false });
 
   canvas.addEventListener("touchend", (e) => {
     if (!tracking) return;
@@ -663,11 +883,21 @@ function initReaderGestures() {
     const dx = tch.clientX - sx;
     const dy = tch.clientY - sy;
     const dt = Date.now() - st;
-    // Horizontal swipe: enough distance, mostly horizontal, within a generous time
-    if (Math.abs(dx) > 38 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 1200) {
-      if (dx < 0) flipPage(1);   // swipe left  -> next page
-      else flipPage(-1);          // swipe right -> previous page
+
+    if (!moved || !slideState) return;
+    clickSwipeLastTouch = Date.now();
+    const progress = Math.abs(slideOffset) / Math.max(1, slideState.width);
+    const flick = Math.abs(dx) > 30 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 360;
+    const commit = flick || progress > 0.32;
+    animateClickSlide(slideDir, slideOffset, commit, slideState);
+  }, { passive: true });
+
+  canvas.addEventListener("touchcancel", () => {
+    if (tracking && moved && slideState) {
+      clickSwipeLastTouch = Date.now();
+      animateClickSlide(slideDir, slideOffset, false, slideState);
     }
+    tracking = false;
   }, { passive: true });
 }
 
@@ -682,20 +912,25 @@ function flipPage(dir) {
     if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
     return;
   }
-  rPageIdx = next; updateProgress();
   if (rMode === "click") {
-    const img = document.querySelector(".r-page-img-box img");
+    if (animateClickSlide(dir, 0, true)) return;
+    rPageIdx = next; updateProgress();
+    const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
     if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; img.src = readerPages[rPageIdx]; }
   } else if (rMode === "slide") {
+    rPageIdx = next; updateProgress();
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;
+  } else {
+    rPageIdx = next; updateProgress();
   }
 }
 
 function jumpPage(idx) {
   rPageIdx = idx; updateProgress();
   if (rMode === "click") {
-    const img = document.querySelector(".r-page-img-box img");
+    cancelClickSlide(true);
+    const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
     if (img) img.src = readerPages[rPageIdx];
   } else if (rMode === "flip") {
     drawCurlStatic();
