@@ -549,7 +549,7 @@ html, body {
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  z-index: 500;
+  z-index: 900;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -1592,23 +1592,38 @@ input:checked + .slider:before {
 .file-checkbox.checked svg { width: 14px; height: 14px; }
 
 .multi-select-bar {
-  position: fixed; left: 0; right: 0;
-  bottom: 0;
+  position: sticky;
+  top: calc(64px + var(--safe-top));
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+  padding: 10px 18px;
   background: var(--bg-card, #fff);
   border-top: 1px solid var(--border-default);
-  box-shadow: 0 -4px 18px rgba(15,23,42,0.1);
-  z-index: 50;
+  border-bottom: 1px solid var(--border-default);
+  box-shadow: 0 4px 14px rgba(15,23,42,0.08);
+  z-index: 90;
 }
-/* Pad the scrollable list so the fixed bar / compress FAB don't cover rows */
-body.ms-active .file-list { padding-bottom: 96px; }
+body.ms-active .file-list { padding-bottom: 20px; }
 .ms-info { color: var(--text-primary, #f1f5f9); font-size: 14px; }
+.ms-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .ms-btn {
   background: rgba(15,23,42,0.05);
   border: 1px solid var(--border-default, rgba(255,255,255,0.12));
   color: var(--text-primary, #f1f5f9);
   padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
+}
+.ms-btn.primary {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+.ms-btn.danger {
+  background: rgba(239,68,68,0.10);
+  border-color: rgba(239,68,68,0.28);
+  color: var(--accent-red);
 }
 
 .fab-compress {

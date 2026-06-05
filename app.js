@@ -188,7 +188,7 @@ function switchNav(viewId, btn, addToHistory = true) {
   const search = document.getElementById("searchBarWrap");
   const cats = document.getElementById("categoryTabs");
   const backBtn = document.getElementById("headerBack");
-  const fab = document.getElementById("fabUpload");
+  const uploadBtn = document.getElementById("fabUpload");
 
   if (addToHistory && navHistory[navHistory.length - 1] !== viewId) {
     navHistory.push(viewId);
@@ -201,11 +201,11 @@ function switchNav(viewId, btn, addToHistory = true) {
     backBtn.style.display = "block";
   }
 
-  // Update upload FAB visibility
+  // Update upload button visibility
   if (viewId === "viewFiles") {
-    if (fab) fab.style.display = "flex";
+    if (uploadBtn) uploadBtn.style.display = "flex";
   } else {
-    if (fab) fab.style.display = "none";
+    if (uploadBtn) uploadBtn.style.display = "none";
   }
 
   if (viewId === "viewFiles") {
@@ -1294,13 +1294,11 @@ function toggleMultiSelect() {
   multiSelectMode = !multiSelectMode;
   multiSelectIds.clear();
   document.getElementById("multiSelectBtn")?.classList.toggle("active", multiSelectMode);
-  document.getElementById("fabCompress").style.display = multiSelectMode ? "flex" : "none";
+  const compressFab = document.getElementById("fabCompress");
+  if (compressFab) compressFab.style.display = "none";
   document.getElementById("multiSelectBar").style.display = multiSelectMode ? "flex" : "none";
   // Pad the list so the fixed bottom bar doesn't cover the last rows
   document.body.classList.toggle("ms-active", multiSelectMode);
-  // Hide upload FAB while multi-selecting
-  const fab = document.getElementById("fabUpload");
-  if (fab) fab.style.display = multiSelectMode ? "none" : "flex";
   refreshFileList();
 }
 
@@ -1314,6 +1312,24 @@ function toggleSelection(id) {
 async function compressSelected() {
   if (multiSelectIds.size === 0) { toast("请先选择文件", "info"); return; }
   document.getElementById("formatDialog").classList.add("active");
+}
+
+async function deleteSelected() {
+  if (multiSelectIds.size === 0) { toast("璇峰厛閫夋嫨鏂囦欢", "info"); return; }
+  if (!confirm(`纭鍒犻櫎閫変腑鐨?${multiSelectIds.size} 涓枃浠讹紵姝ゆ搷浣滄棤娉曟仮澶嶏紒`)) return;
+
+  const ids = [...multiSelectIds];
+  try {
+    for (const id of ids) {
+      await dbDel(id);
+    }
+    toast(t("deleteOk"), "success");
+    toggleMultiSelect();
+  } catch (e) {
+    console.error("[deleteSelected] error:", e);
+    toast("鍒犻櫎澶辫触", "error");
+    refreshFileList();
+  }
 }
 
 function closeFormatDialog() {
