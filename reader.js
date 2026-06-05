@@ -433,8 +433,9 @@ function initPageFlip(stage) {
     flippingTime: 620,
     mobileScrollSupport: false,
     swipeDistance: 24,
-    showPageCorners: true,
-    disableFlipByClick: true
+    showPageCorners: false,
+    disableFlipByClick: true,
+    useMouseEvents: false
   });
 
   pageFlipBook.on("flip", (e) => {
@@ -467,18 +468,61 @@ function destroyLibraryPageFlip() {
 }
 
 function attachPageFlipTapZones(stage) {
-  let sx = 0, sy = 0, st = 0, mouseDown = false, lastTouchTap = 0;
+  let sx = 0, sy = 0, st = 0, pointerActive = false, dragging = false, lastTouchTap = 0;
 
-  const handleTap = (clientX, e) => {
+  const getBookPoint = (clientX, clientY) => {
+    const el = stage.querySelector(".stf__block, .stf__canvas") || stage;
+    const r = el.getBoundingClientRect();
+    return { x: clientX - r.left, y: clientY - r.top };
+  };
+
+  const handleTap = (clientX, clientY, e) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
     const r = stage.getBoundingClientRect();
     const x = clientX - r.left;
-    if (x < r.width * 0.30) flipPage(-1);
-    else if (x > r.width * 0.70) flipPage(1);
+    const corner = (clientY - r.top) < r.height / 2 ? "top" : "bottom";
+    if (x < r.width * 0.30) flipPage(-1, corner);
+    else if (x > r.width * 0.70) flipPage(1, corner);
     else toggleControls();
+  };
+
+  const maybeStartDrag = (clientX, clientY, e) => {
+    if (!pointerActive || dragging || !pageFlipBook) return false;
+    const dx = clientX - sx;
+    const dy = clientY - sy;
+    if (Math.hypot(dx, dy) < 9 || Math.abs(dx) < 7) return false;
+    dragging = true;
+    pageFlipBook.startUserTouch(getBookPoint(sx, sy));
+    pageFlipBook.userMove(getBookPoint(clientX, clientY), true);
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return true;
+  };
+
+  const moveDrag = (clientX, clientY, e) => {
+    if (!dragging || !pageFlipBook) return;
+    pageFlipBook.userMove(getBookPoint(clientX, clientY), true);
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  const finishDrag = (clientX, clientY, e) => {
+    if (!dragging || !pageFlipBook) return false;
+    pageFlipBook.userStop(getBookPoint(clientX, clientY), false);
+    dragging = false;
+    pointerActive = false;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return true;
   };
 
   stage.addEventListener("touchstart", (e) => {
@@ -486,34 +530,59 @@ function attachPageFlipTapZones(stage) {
     sx = e.touches[0].clientX;
     sy = e.touches[0].clientY;
     st = Date.now();
-  }, { passive: true, capture: true });
+    pointerActive = true;
+    dragging = false;
+  }, { passive: true });
+
+  stage.addEventListener("touchmove", (e) => {
+    if (!e.touches.length) return;
+    const t0 = e.touches[0];
+    if (!maybeStartDrag(t0.clientX, t0.clientY, e)) {
+      moveDrag(t0.clientX, t0.clientY, e);
+    }
+  }, { passive: false });
 
   stage.addEventListener("touchend", (e) => {
     if (!e.changedTouches.length) return;
     const t0 = e.changedTouches[0];
+    if (finishDrag(t0.clientX, t0.clientY, e)) return;
+    pointerActive = false;
     const dx = Math.abs(t0.clientX - sx);
     const dy = Math.abs(t0.clientY - sy);
     if (Date.now() - st < 360 && dx < 12 && dy < 12) {
       lastTouchTap = Date.now();
-      handleTap(t0.clientX, e);
+      handleTap(t0.clientX, t0.clientY, e);
     }
-  }, { passive: false, capture: true });
+  }, { passive: false });
 
   stage.addEventListener("mousedown", (e) => {
     if (Date.now() - lastTouchTap < 600) return;
-    mouseDown = true;
+    pointerActive = true;
+    dragging = false;
     sx = e.clientX;
     sy = e.clientY;
     st = Date.now();
-  }, true);
+  });
+
+  stage.addEventListener("mousemove", (e) => {
+    if (!maybeStartDrag(e.clientX, e.clientY, e)) {
+      moveDrag(e.clientX, e.clientY, e);
+    }
+  });
 
   stage.addEventListener("mouseup", (e) => {
-    if (!mouseDown || Date.now() - lastTouchTap < 600) return;
-    mouseDown = false;
+    if (!pointerActive || Date.now() - lastTouchTap < 600) return;
+    if (finishDrag(e.clientX, e.clientY, e)) return;
+    pointerActive = false;
     const dx = Math.abs(e.clientX - sx);
     const dy = Math.abs(e.clientY - sy);
-    if (Date.now() - st < 360 && dx < 8 && dy < 8) handleTap(e.clientX, e);
-  }, true);
+    if (Date.now() - st < 360 && dx < 8 && dy < 8) handleTap(e.clientX, e.clientY, e);
+  });
+
+  stage.addEventListener("mouseleave", (e) => {
+    if (dragging) finishDrag(e.clientX, e.clientY, e);
+    pointerActive = false;
+  });
 }
 
 /* ===== SELF-BUILT SINGLE-PAGE FLIP ===== */
@@ -1033,7 +1102,7 @@ function initReaderGestures() {
 }
 
 /* ===== PAGE NAVIGATION ===== */
-function flipPage(dir) {
+function flipPage(dir, corner = "top") {
   if (rMode === "flip") {
     if (!pageFlipBook) return;
     const next = rPageIdx + dir;
@@ -1041,9 +1110,9 @@ function flipPage(dir) {
       if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
       return;
     }
-    rPageIdx = next;
-    updateProgress();
-    pageFlipBook.turnToPage(next);
+    if (typeof pageFlipBook.getState === "function" && pageFlipBook.getState() !== "read") return;
+    if (dir > 0) pageFlipBook.flipNext(corner);
+    else pageFlipBook.flipPrev(corner);
     return;
   }
   const next = rPageIdx + dir;
