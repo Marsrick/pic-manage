@@ -1227,13 +1227,14 @@ function initUpload() {
 }
 
 function prepUpload(file) {
-  if (file.size > 500 * 1024 * 1024) { toast(t("fileTooLarge"), "error"); return; }
+  if (file.size > 500 * 1024 * 1024) { toast(t("fileTooLarge"), "error"); return Promise.resolve(false); }
   pendingFile = file;
   if (isAdmin) {
     document.getElementById("choiceDialog").classList.add("active");
+    return Promise.resolve(false);
   } else {
     // Normal user: directly upload to public storage, skip encryption dialog
-    saveFileAs(false);
+    return saveFileAs(false);
   }
 }
 
@@ -1241,17 +1242,21 @@ function cancelUpload() { pendingFile = null; uploadTargetFolder = null; documen
 
 async function saveFileAs(isPrivate) {
   document.getElementById("choiceDialog").classList.remove("active");
-  if (!pendingFile) return;
+  if (!pendingFile) return false;
 
   try {
-    const buf = await pendingFile.arrayBuffer();
     let data;
     if (isPrivate) {
-      if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
+      if (!adminKey) { toast(t("sessionExpired"), "error"); return false; }
+      const buf = await pendingFile.arrayBuffer();
       const enc = await encryptBuf(buf, adminKey);
       data = new Blob([enc]);
     } else {
-      data = new Blob([buf]);
+      // Public files can be stored as Blob/File directly. Avoid arrayBuffer()
+      // here so large external files do not get copied into JS memory again.
+      data = pendingFile instanceof Blob
+        ? pendingFile
+        : new Blob([await pendingFile.arrayBuffer()], { type: pendingFile.type || "application/octet-stream" });
     }
 
     const folder = uploadTargetFolder || currentFolder || undefined;
@@ -1259,7 +1264,8 @@ async function saveFileAs(isPrivate) {
     toast(t("uploadOk"), "success");
     pendingFile = null; uploadTargetFolder = null; document.getElementById("fileInput").value = "";
     refreshFileList();
-  } catch (e) { console.error(e); toast(t("uploadErr"), "error"); }
+    return true;
+  } catch (e) { console.error(e); toast(t("uploadErr"), "error"); return false; }
 }
 
 async function dbGet(id) {
@@ -2061,17 +2067,44 @@ async function handleIncomingFileURL(url) {
 }
 
 function base64ToBlob(b64, type) {
-  const bin = atob(b64);
-  const len = bin.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: type || "application/octet-stream" });
+  let mime = type || "application/octet-stream";
+  let raw = b64 || "";
+  const dataUrlMatch = raw.match(/^data:([^;,]+)?;base64,(.*)$/);
+  if (dataUrlMatch) {
+    mime = dataUrlMatch[1] || mime;
+    raw = dataUrlMatch[2] || "";
+  }
+  raw = raw.replace(/\s/g, "");
+
+  const sliceSize = 1024 * 1024;
+  const chunks = [];
+  for (let offset = 0; offset < raw.length; offset += sliceSize) {
+    const bin = atob(raw.slice(offset, offset + sliceSize));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    chunks.push(bytes);
+  }
+  return new Blob(chunks, { type: mime });
 }
 
 // Read an incoming file URL into a Blob. On iOS, WKWebView fetch() of
-// file:// is unreliable, so try the Capacitor Filesystem plugin first
-// (works for any file type), then fall back to fetch(convertFileSrc).
+// file:// can fail for some sources, but it avoids the base64 memory
+// expansion that breaks large files. Try it first, then fall back to
+// Capacitor Filesystem.readFile.
 async function readIncomingFile(url) {
+  const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
+    ? window.Capacitor.convertFileSrc(url) : url;
+  try {
+    console.log("[ios-receive] fetching:", webUrl);
+    const resp = await fetch(webUrl, { cache: "no-store" });
+    if (!resp.ok) throw new Error("fetch failed " + resp.status);
+    const blob = await resp.blob();
+    if (!blob.size) throw new Error("empty fetch body");
+    return blob;
+  } catch (e) {
+    console.warn("[ios-receive] fetch failed, falling back to Filesystem.readFile:", e);
+  }
+
   const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
   const Filesystem = plugins.Filesystem;
   if (Filesystem && typeof Filesystem.readFile === "function") {
@@ -2082,15 +2115,10 @@ async function readIncomingFile(url) {
         return base64ToBlob(res.data, "");
       }
     } catch (e) {
-      console.warn("[ios-receive] Filesystem.readFile failed, falling back to fetch:", e);
+      console.warn("[ios-receive] Filesystem.readFile failed:", e);
     }
   }
-  const webUrl = (window.Capacitor && typeof window.Capacitor.convertFileSrc === "function")
-    ? window.Capacitor.convertFileSrc(url) : url;
-  console.log("[ios-receive] fetching:", webUrl);
-  const resp = await fetch(webUrl);
-  if (!resp.ok) throw new Error("fetch failed " + resp.status);
-  return await resp.blob();
+  throw new Error("无法读取外部文件");
 }
 
 async function processIncomingFileURL(url) {
@@ -2105,7 +2133,7 @@ async function processIncomingFileURL(url) {
 
     const file = new File([blob], fileName, { type: blob.type || "application/octet-stream" });
     if (typeof prepUpload === "function") {
-      prepUpload(file);
+      await prepUpload(file);
     } else {
       console.error("[ios-receive] prepUpload not found");
     }
