@@ -104,6 +104,12 @@ let isStartupUnlock = false;
 let multiSelectMode = false;
 const multiSelectIds = new Set();
 let actionMenuTargetId = null;
+let moveDialogTargetIds = [];
+let touchMoveState = null;
+let touchMoveSuppressClick = false;
+let fileMoveTrayIds = [];
+let fileMoveTrayToken = 0;
+let uploadTargetFolder = null;
 let compressFolderName = null;
 const pendingExternalUrls = [];
 let appBootDone = false;
@@ -232,6 +238,12 @@ function openFeedback() {
 }
 
 function triggerUpload() {
+  uploadTargetFolder = null;
+  document.getElementById("fileInput").click();
+}
+
+function triggerFolderUpload(folderName) {
+  uploadTargetFolder = normalizeFolderName(folderName);
   document.getElementById("fileInput").click();
 }
 
@@ -402,6 +414,7 @@ function renderFolderRow(name, base) {
         <div class="file-meta-row"><span class="file-size-text">${count} 项</span></div>
       </div>
       <div class="file-row-actions">
+        <button class="file-action-btn folder-add-btn" title="添加文件"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v9m4.5-4.5h-9M3.75 6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l1.621 1.62a1.5 1.5 0 001.061.44H18A2.25 2.25 0 0120.25 8.5v9.25A2.25 2.25 0 0118 20H6a2.25 2.25 0 01-2.25-2.25V6z"/></svg></button>
         <button class="file-action-btn folder-zip-btn" title="压缩文件夹"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></button>
         <button class="file-action-btn danger folder-del-btn" title="删除文件夹"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg></button>
       </div>
@@ -418,20 +431,14 @@ function renderBackRow(folderName) {
 
 function bindFolderEvents(area) {
   const acceptDrop = async (targetFolder, dataTransfer) => {
-    const id = Number(dataTransfer.getData("text/plain"));
-    if (!id) return;
-    const f = await dbGet(id);
-    if (!f) return;
-    if ((f.folder || null) === (targetFolder || null)) return; // already there
-    f.folder = targetFolder || undefined;
-    await dbPut(f);
-    toast(targetFolder ? `已移入「${targetFolder}」` : "已移出文件夹", "success");
-    refreshFileList();
+    const ids = getDragFileIds(dataTransfer);
+    if (ids.length === 0) return;
+    await moveFileIdsToFolder(ids, targetFolder);
   };
 
   area.querySelectorAll(".folder-row").forEach(row => {
     row.addEventListener("click", e => {
-      if (e.target.closest(".folder-del-btn") || e.target.closest(".folder-zip-btn")) return;
+      if (e.target.closest(".folder-add-btn") || e.target.closest(".folder-del-btn") || e.target.closest(".folder-zip-btn")) return;
       currentFolder = row.dataset.folder;
       refreshFileList();
     });
@@ -442,6 +449,13 @@ function bindFolderEvents(area) {
       e.preventDefault();
       row.classList.remove("drag-over");
       await acceptDrop(row.dataset.folder, e.dataTransfer);
+      hideFileMoveTray();
+    });
+  });
+  area.querySelectorAll(".folder-add-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      triggerFolderUpload(btn.closest(".folder-row").dataset.folder);
     });
   });
   area.querySelectorAll(".folder-del-btn").forEach(btn => {
@@ -472,6 +486,7 @@ function bindFolderEvents(area) {
       e.preventDefault();
       back.classList.remove("drag-over");
       await acceptDrop(null, e.dataTransfer);
+      hideFileMoveTray();
     });
   }
 }
@@ -485,7 +500,7 @@ function renderFileRow(f, showLock) {
     : "";
 
   return `
-    <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}" draggable="true">
+    <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}" draggable="false">
       ${checkboxHtml}
       <div class="file-icon-wrap ${iconCls}">${getIconSVG(f.name)}${lockBadge}</div>
       <div class="file-info">
@@ -523,6 +538,7 @@ function bindFileRowEvents(area) {
   area.querySelectorAll(".file-row").forEach(row => {
     if (row.dataset.id === undefined) return; // skip folder/back rows
     row.addEventListener("click", async () => {
+      if (touchMoveSuppressClick) { touchMoveSuppressClick = false; return; }
       const id = Number(row.dataset.id);
       if (multiSelectMode) {
         toggleSelection(id);
@@ -532,14 +548,200 @@ function bindFileRowEvents(area) {
       const f = all.find(x => x.id === id);
       if (f) openFileView(f);
     });
-    // Drag source: report the file id so a folder row can accept the drop
+    // Drag source: report file ids so folder targets can accept the drop.
     row.addEventListener("dragstart", (e) => {
-      if (multiSelectMode) { e.preventDefault(); return; }
+      const id = Number(row.dataset.id);
+      if (multiSelectMode && !multiSelectIds.has(id)) { e.preventDefault(); return; }
+      const dragIds = multiSelectMode ? [...multiSelectIds] : [id];
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", row.dataset.id);
+      e.dataTransfer.setData("application/x-pic-manage-ids", JSON.stringify(dragIds));
       row.classList.add("dragging");
+      showFileMoveTray(dragIds);
     });
-    row.addEventListener("dragend", () => row.classList.remove("dragging"));
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      setTimeout(hideFileMoveTray, 80);
+    });
+    bindMouseMoveFile(row);
+    bindTouchMoveFile(row);
+  });
+}
+
+function clearTouchMoveTarget() {
+  if (touchMoveState?.target) touchMoveState.target.classList.remove("drag-over");
+  if (touchMoveState) touchMoveState.target = null;
+}
+
+function setTouchMoveTarget(target) {
+  if (!touchMoveState || touchMoveState.target === target) return;
+  clearTouchMoveTarget();
+  touchMoveState.target = target;
+  if (target) target.classList.add("drag-over");
+}
+
+function getTouchMoveTarget(clientX, clientY) {
+  const el = document.elementFromPoint(clientX, clientY);
+  return el?.closest?.(".folder-row, .back-row, .file-move-target") || null;
+}
+
+function positionTouchMoveGhost(clientX, clientY) {
+  if (!touchMoveState?.ghost) return;
+  touchMoveState.ghost.style.transform = `translate3d(${clientX + 12}px, ${clientY + 12}px, 0)`;
+}
+
+function getRowMoveIds(row) {
+  const id = Number(row.dataset.id);
+  if (!id) return [];
+  if (!multiSelectMode) return [id];
+  if (!multiSelectIds.has(id)) return [];
+  return [...multiSelectIds];
+}
+
+function startRowMoveFile(row, clientX, clientY, ids) {
+  const moveIds = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (moveIds.length === 0 || touchMoveState) return false;
+  const ghost = document.createElement("div");
+  ghost.className = "file-move-ghost";
+  ghost.textContent = moveIds.length > 1 ? `${moveIds.length} 个文件` : (row.dataset.name || "文件");
+  document.body.appendChild(ghost);
+  touchMoveState = { ids: moveIds, row, ghost, target: null };
+  row.classList.add("dragging", "touch-dragging");
+  document.body.classList.add("file-touch-moving");
+  positionTouchMoveGhost(clientX, clientY);
+  showFileMoveTray(moveIds);
+  return true;
+}
+
+function startTouchMoveFile(row, touch) {
+  const id = Number(row.dataset.id);
+  if (!id || multiSelectMode) return;
+  startRowMoveFile(row, touch.clientX, touch.clientY, [id]);
+}
+
+function finishTouchMoveFile() {
+  if (!touchMoveState) return;
+  const { ids, row, ghost, target } = touchMoveState;
+  const targetFolder = target?.classList.contains("back-row") ? null : target?.dataset.folder;
+  clearTouchMoveTarget();
+  row.classList.remove("dragging", "touch-dragging");
+  ghost.remove();
+  document.body.classList.remove("file-touch-moving");
+  touchMoveState = null;
+  touchMoveSuppressClick = true;
+  if (target) moveFileIdsToFolder(ids, targetFolder || null);
+  hideFileMoveTray();
+}
+
+function cancelTouchMoveFile(row) {
+  clearTouchMoveTarget();
+  if (touchMoveState?.ghost) touchMoveState.ghost.remove();
+  if (touchMoveState?.row) touchMoveState.row.classList.remove("dragging", "touch-dragging");
+  row?.classList.remove("touch-dragging");
+  document.body.classList.remove("file-touch-moving");
+  touchMoveState = null;
+  hideFileMoveTray();
+}
+
+function bindTouchMoveFile(row) {
+  let sx = 0, sy = 0, timer = null, armed = false;
+
+  const cancelTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    armed = false;
+  };
+
+  row.addEventListener("touchstart", (e) => {
+    if (multiSelectMode || e.touches.length !== 1 || e.target.closest(".file-row-actions")) return;
+    const t0 = e.touches[0];
+    sx = t0.clientX;
+    sy = t0.clientY;
+    armed = true;
+    timer = setTimeout(() => {
+      if (!armed) return;
+      startTouchMoveFile(row, t0);
+    }, 420);
+  }, { passive: true });
+
+  row.addEventListener("touchmove", (e) => {
+    if (e.touches.length !== 1) return;
+    const t0 = e.touches[0];
+    const moved = Math.hypot(t0.clientX - sx, t0.clientY - sy);
+    if (!touchMoveState) {
+      if (moved > 14) cancelTimer();
+      return;
+    }
+    e.preventDefault();
+    positionTouchMoveGhost(t0.clientX, t0.clientY);
+    setTouchMoveTarget(getTouchMoveTarget(t0.clientX, t0.clientY));
+  }, { passive: false });
+
+  row.addEventListener("touchend", (e) => {
+    cancelTimer();
+    if (!touchMoveState) return;
+    e.preventDefault();
+    finishTouchMoveFile();
+  }, { passive: false });
+
+  row.addEventListener("touchcancel", () => {
+    cancelTimer();
+    cancelTouchMoveFile(row);
+  }, { passive: true });
+}
+
+function bindMouseMoveFile(row) {
+  let sx = 0, sy = 0, ids = [], armed = false;
+
+  const cleanup = () => {
+    armed = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+
+  const onMove = (e) => {
+    if (!armed) return;
+    if ((e.buttons & 1) !== 1) {
+      cleanup();
+      cancelTouchMoveFile(row);
+      return;
+    }
+
+    const moved = Math.hypot(e.clientX - sx, e.clientY - sy);
+    if (!touchMoveState) {
+      if (moved < 6) return;
+      if (!startRowMoveFile(row, e.clientX, e.clientY, ids)) {
+        cleanup();
+        return;
+      }
+    }
+
+    e.preventDefault();
+    window.getSelection?.().removeAllRanges?.();
+    positionTouchMoveGhost(e.clientX, e.clientY);
+    setTouchMoveTarget(getTouchMoveTarget(e.clientX, e.clientY));
+  };
+
+  const onUp = (e) => {
+    if (!armed) return;
+    const wasMoving = Boolean(touchMoveState);
+    if (wasMoving) {
+      e.preventDefault();
+      setTouchMoveTarget(getTouchMoveTarget(e.clientX, e.clientY));
+      finishTouchMoveFile();
+    }
+    cleanup();
+  };
+
+  row.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target.closest(".file-row-actions")) return;
+    ids = getRowMoveIds(row);
+    if (ids.length === 0) return;
+    sx = e.clientX;
+    sy = e.clientY;
+    armed = true;
+    document.addEventListener("mousemove", onMove, { passive: false });
+    document.addEventListener("mouseup", onUp, { passive: false });
   });
 }
 
@@ -1035,7 +1237,7 @@ function prepUpload(file) {
   }
 }
 
-function cancelUpload() { pendingFile = null; document.getElementById("choiceDialog").classList.remove("active"); document.getElementById("fileInput").value = ""; }
+function cancelUpload() { pendingFile = null; uploadTargetFolder = null; document.getElementById("choiceDialog").classList.remove("active"); document.getElementById("fileInput").value = ""; }
 
 async function saveFileAs(isPrivate) {
   document.getElementById("choiceDialog").classList.remove("active");
@@ -1052,9 +1254,10 @@ async function saveFileAs(isPrivate) {
       data = new Blob([buf]);
     }
 
-    await dbAdd({ name: pendingFile.name, size: pendingFile.size, type: pendingFile.type, isPrivate, uploadedAt: Date.now(), data });
+    const folder = uploadTargetFolder || currentFolder || undefined;
+    await dbAdd({ name: pendingFile.name, size: pendingFile.size, type: pendingFile.type, isPrivate, uploadedAt: Date.now(), data, folder });
     toast(t("uploadOk"), "success");
-    pendingFile = null; document.getElementById("fileInput").value = "";
+    pendingFile = null; uploadTargetFolder = null; document.getElementById("fileInput").value = "";
     refreshFileList();
   } catch (e) { console.error(e); toast(t("uploadErr"), "error"); }
 }
@@ -1072,6 +1275,119 @@ function dbPut(obj) {
   });
 }
 
+function normalizeFolderName(name) {
+  const trimmed = (name || "").trim();
+  return trimmed ? trimmed.slice(0, 80) : null;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  }[ch]));
+}
+
+function getVisibleFolderNames(files) {
+  const source = files || [];
+  const visible = isAdmin ? source : source.filter(f => !f.isPrivate);
+  return [...new Set(visible.filter(f => f.folder).map(f => f.folder))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+async function moveFileIdsToFolder(ids, targetFolder) {
+  const folder = normalizeFolderName(targetFolder);
+  const uniqueIds = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (uniqueIds.length === 0) { toast("请先选择文件", "info"); return false; }
+
+  const all = await dbAll();
+  let moved = 0;
+  for (const id of uniqueIds) {
+    const f = all.find(x => x.id === id);
+    if (!f) continue;
+    if (!isAdmin && f.isPrivate) continue;
+    if ((f.folder || null) === (folder || null)) continue;
+    f.folder = folder || undefined;
+    await dbPut(f);
+    moved++;
+  }
+
+  if (moved > 0) {
+    toast(folder ? `已移动 ${moved} 个文件到「${folder}」` : `已移出 ${moved} 个文件`, "success");
+    refreshFileList();
+    return true;
+  }
+  toast("文件已在目标位置", "info");
+  return false;
+}
+
+function getDragFileIds(dataTransfer) {
+  const raw = dataTransfer?.getData("application/x-pic-manage-ids") || dataTransfer?.getData("text/plain") || "";
+  if (!raw) return [];
+  try { return raw.startsWith("[") ? JSON.parse(raw).map(Number).filter(Boolean) : [Number(raw)].filter(Boolean); }
+  catch (_) { return [Number(raw)].filter(Boolean); }
+}
+
+function getOrCreateFileMoveTray() {
+  let tray = document.getElementById("fileMoveTray");
+  if (tray) return tray;
+  tray = document.createElement("div");
+  tray.id = "fileMoveTray";
+  tray.className = "file-move-tray";
+  document.body.appendChild(tray);
+  return tray;
+}
+
+async function showFileMoveTray(ids) {
+  const token = ++fileMoveTrayToken;
+  fileMoveTrayIds = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (fileMoveTrayIds.length === 0) return;
+
+  const all = await dbAll();
+  if (token !== fileMoveTrayToken || fileMoveTrayIds.length === 0) return;
+  const folders = getVisibleFolderNames(all);
+  const tray = getOrCreateFileMoveTray();
+  const targetButtons = [
+    currentFolder ? `<button class="file-move-target" data-folder="">根目录</button>` : "",
+    ...folders.map(name => `<button class="file-move-target" data-folder="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+  ].filter(Boolean).join("");
+  tray.innerHTML = `
+    <div class="file-move-tray-title">拖到文件夹加入</div>
+    <div class="file-move-targets">
+      ${targetButtons || `<div class="file-move-empty">暂无文件夹，可用“移动到...”新建</div>`}
+    </div>
+  `;
+
+  tray.querySelectorAll(".file-move-target").forEach(target => {
+    target.addEventListener("dragover", e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      target.classList.add("drag-over");
+    });
+    target.addEventListener("dragleave", () => target.classList.remove("drag-over"));
+    target.addEventListener("drop", async e => {
+      e.preventDefault();
+      target.classList.remove("drag-over");
+      const idsFromDrag = getDragFileIds(e.dataTransfer);
+      await moveFileIdsToFolder(idsFromDrag.length ? idsFromDrag : fileMoveTrayIds, target.dataset.folder || null);
+      hideFileMoveTray();
+    });
+  });
+
+  tray.classList.add("active");
+}
+
+function hideFileMoveTray() {
+  fileMoveTrayToken++;
+  const tray = document.getElementById("fileMoveTray");
+  if (tray) {
+    tray.classList.remove("active");
+    tray.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+  }
+  fileMoveTrayIds = [];
+}
+
 /* ===== ACTION MENU ===== */
 function openActionMenu(id) {
   actionMenuTargetId = id;
@@ -1080,8 +1396,9 @@ function openActionMenu(id) {
     const menu = document.getElementById("actionMenu");
     const ext = getFileExt(f.name);
     const probableArchive = ["zip","cbz","cbr","7z","tar","gz","tgz","rar","log"].includes(ext);
-    menu.querySelector('[data-act="extract"]').style.display = probableArchive ? "" : "none";
-    menu.querySelector('[data-act="extract"]').textContent =
+    const extractBtn = menu.querySelector('[data-act="extract"]');
+    extractBtn.style.display = probableArchive ? "" : "none";
+    extractBtn.querySelector("span").textContent =
       (isAdmin || ["zip","cbz","cbr","7z","tar","gz","tgz","rar"].includes(ext)) ? "解压" : "解压（管理员）";
     menu.classList.add("active");
   });
@@ -1097,6 +1414,7 @@ async function handleActionClick(act) {
   closeActionMenu();
   if (!id) return;
   if (act === "rename") openRenameDialog(id);
+  else if (act === "move") openMoveDialog([id]);
   else if (act === "delete") {
     if (confirm(t("confirmDel"))) {
       await dbDel(id);
@@ -1314,6 +1632,11 @@ async function compressSelected() {
   document.getElementById("formatDialog").classList.add("active");
 }
 
+async function moveSelected() {
+  if (multiSelectIds.size === 0) { toast("请先选择文件", "info"); return; }
+  openMoveDialog([...multiSelectIds]);
+}
+
 async function deleteSelected() {
   if (multiSelectIds.size === 0) { toast("璇峰厛閫夋嫨鏂囦欢", "info"); return; }
   if (!confirm(`纭鍒犻櫎閫変腑鐨?${multiSelectIds.size} 涓枃浠讹紵姝ゆ搷浣滄棤娉曟仮澶嶏紒`)) return;
@@ -1330,6 +1653,56 @@ async function deleteSelected() {
     toast("鍒犻櫎澶辫触", "error");
     refreshFileList();
   }
+}
+
+async function openMoveDialog(ids) {
+  moveDialogTargetIds = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (moveDialogTargetIds.length === 0) { toast("请先选择文件", "info"); return; }
+
+  const all = await dbAll();
+  const visibleFiles = isAdmin ? all : all.filter(f => !f.isPrivate);
+  const folders = getVisibleFolderNames(all);
+  const list = document.getElementById("moveFolderList");
+  const currentLabel = currentFolder ? `当前位置：${currentFolder}` : "当前位置：根目录";
+
+  list.innerHTML = `
+    <button class="move-folder-option" data-folder="">
+      <span>根目录</span>
+      <small>${currentLabel}</small>
+    </button>
+    ${folders.map(name => `
+      <button class="move-folder-option" data-folder="${escapeHtml(name)}">
+        <span>${escapeHtml(name)}</span>
+        <small>${visibleFiles.filter(f => f.folder === name).length} 个文件</small>
+      </button>
+    `).join("")}
+  `;
+
+  list.querySelectorAll(".move-folder-option").forEach(btn => {
+    btn.addEventListener("click", () => confirmMoveTo(btn.dataset.folder || null));
+  });
+
+  const input = document.getElementById("moveNewFolderInput");
+  input.value = "";
+  document.getElementById("moveDialog").classList.add("active");
+  setTimeout(() => input.focus(), 80);
+}
+
+function closeMoveDialog() {
+  document.getElementById("moveDialog").classList.remove("active");
+  moveDialogTargetIds = [];
+}
+
+async function confirmMoveTo(targetFolder) {
+  const moved = await moveFileIdsToFolder(moveDialogTargetIds, targetFolder);
+  if (moved && multiSelectMode) toggleMultiSelect();
+  closeMoveDialog();
+}
+
+async function confirmMoveToNewFolder() {
+  const name = normalizeFolderName(document.getElementById("moveNewFolderInput").value);
+  if (!name) { toast("请输入文件夹名称", "info"); return; }
+  await confirmMoveTo(name);
 }
 
 function closeFormatDialog() {

@@ -9,6 +9,8 @@ let rAutoSpeed = 3;
 let isFlipping = false;
 let readerImageZoomed = false;
 let pageFlipBook = null;
+let pageFlipInitSeq = 0;
+let pageFlipRenderUrls = [];
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -289,6 +291,7 @@ function closeReader() {
   cancelAnimationFrame(pfRAF);
   readerPages.forEach(u => URL.revokeObjectURL(u));
   readerPages = [];
+  clearPageFlipRenderUrls();
   document.getElementById("readerOverlay").classList.remove("active");
   document.getElementById("readerCanvas").innerHTML = "";
   document.getElementById("readerControls").classList.remove("visible");
@@ -337,6 +340,88 @@ function preloadAdjacent() {
     const img = new Image();
     img.src = readerPages[prev];
   }
+}
+
+function clearPageFlipRenderUrls() {
+  pageFlipRenderUrls.forEach((url) => URL.revokeObjectURL(url));
+  pageFlipRenderUrls = [];
+}
+
+function loadReaderImage(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+function getPageFlipBookSize(stage) {
+  const host = stage.parentElement || stage;
+  const rect = host.getBoundingClientRect();
+  return {
+    width: Math.max(1, Math.round(rect.width || window.innerWidth || 360)),
+    height: Math.max(1, Math.round(rect.height || window.innerHeight || 560))
+  };
+}
+
+async function preparePageFlipImages(width, height, initSeq) {
+  clearPageFlipRenderUrls();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const maxPixels = 2200;
+  const scale = Math.min(dpr, maxPixels / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const pageAspect = canvas.width / canvas.height;
+  const renderUrls = [];
+  const createdUrls = [];
+
+  for (const src of readerPages) {
+    if (initSeq !== pageFlipInitSeq) {
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+      return null;
+    }
+
+    const img = await loadReaderImage(src);
+    if (!img) {
+      renderUrls.push(src);
+      continue;
+    }
+
+    const imgAspect = (img.naturalWidth || img.width) / Math.max(1, img.naturalHeight || img.height);
+    if (Math.abs(imgAspect - pageAspect) < 0.01) {
+      renderUrls.push(src);
+      continue;
+    }
+
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    let drawW = canvas.width;
+    let drawH = Math.round(drawW / imgAspect);
+    if (drawH > canvas.height) {
+      drawH = canvas.height;
+      drawW = Math.round(drawH * imgAspect);
+    }
+    const dx = Math.round((canvas.width - drawW) / 2);
+    const dy = Math.round((canvas.height - drawH) / 2);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, dx, dy, drawW, drawH);
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.95));
+    if (!blob) {
+      renderUrls.push(src);
+      continue;
+    }
+    const url = URL.createObjectURL(blob);
+    createdUrls.push(url);
+    renderUrls.push(url);
+  }
+
+  pageFlipRenderUrls = createdUrls;
+  return renderUrls;
 }
 
 /* ===== RENDER PAGE ===== */
@@ -400,34 +485,40 @@ function renderPage() {
   } else if (rMode === "flip") {
     readerImageZoomed = false;
     const stage = document.createElement("div"); stage.className = "pageflip-stage"; stage.id = "flipStage";
+    const hitLayer = document.createElement("div"); hitLayer.className = "pageflip-hit-layer";
+    stage.appendChild(hitLayer);
     container.appendChild(stage);
     setTimeout(() => initPageFlip(stage), 30);
   }
 }
 
 /* ===== PAGE-FLIP LIBRARY MODE ===== */
-function initPageFlip(stage) {
+async function initPageFlip(stage) {
+  const initSeq = ++pageFlipInitSeq;
   if (rMode !== "flip" || !stage) return;
   if (!window.St?.PageFlip) {
     toast("翻页引擎加载失败", "error");
     return;
   }
 
-  const rect = stage.getBoundingClientRect();
-  const width = Math.max(260, Math.round(rect.width || window.innerWidth || 360));
-  const height = Math.max(360, Math.round(rect.height || window.innerHeight || 560));
+  const { width, height } = getPageFlipBookSize(stage);
+  stage.style.setProperty("--pageflip-book-width", `${width}px`);
+  stage.style.setProperty("--pageflip-book-height", `${height}px`);
+  const flipImages = await preparePageFlipImages(width, height, initSeq);
+  if (!flipImages || initSeq !== pageFlipInitSeq || rMode !== "flip" || !stage.isConnected) return;
 
   pageFlipBook = new St.PageFlip(stage, {
     width,
     height,
     size: "stretch",
-    minWidth: 260,
-    maxWidth: 1400,
-    minHeight: 360,
-    maxHeight: 2200,
+    minWidth: width,
+    maxWidth: width,
+    minHeight: height,
+    maxHeight: height,
     startPage: rPageIdx,
     showCover: false,
     usePortrait: true,
+    autoSize: false,
     drawShadow: true,
     maxShadowOpacity: 0.42,
     flippingTime: 620,
@@ -446,22 +537,13 @@ function initPageFlip(stage) {
     }
   });
 
-  const pages = readerPages.map((src, i) => {
-    const page = document.createElement("div");
-    page.className = "pageflip-page";
-    page.dataset.density = "soft";
-    const img = document.createElement("img");
-    img.src = src;
-    img.alt = `Page ${i + 1}`;
-    page.appendChild(img);
-    return page;
-  });
-
-  pageFlipBook.loadFromHTML(pages);
+  pageFlipBook.loadFromImages(flipImages);
   attachPageFlipTapZones(stage);
 }
 
 function destroyLibraryPageFlip() {
+  pageFlipInitSeq++;
+  clearPageFlipRenderUrls();
   if (!pageFlipBook) return;
   try { pageFlipBook.destroy(); } catch (_) {}
   pageFlipBook = null;
@@ -469,11 +551,20 @@ function destroyLibraryPageFlip() {
 
 function attachPageFlipTapZones(stage) {
   let sx = 0, sy = 0, st = 0, pointerActive = false, dragging = false, lastTouchTap = 0;
+  const inputLayer = stage.querySelector(".pageflip-hit-layer") || stage;
 
-  const getBookPoint = (clientX, clientY) => {
+  const getBookRect = () => {
     const el = stage.querySelector(".stf__block, .stf__canvas") || stage;
     const r = el.getBoundingClientRect();
-    return { x: clientX - r.left, y: clientY - r.top };
+    return r.width > 0 && r.height > 0 ? r : stage.getBoundingClientRect();
+  };
+
+  const getBookPoint = (clientX, clientY) => {
+    const r = getBookRect();
+    return {
+      x: Math.max(0, Math.min(r.width, clientX - r.left)),
+      y: Math.max(0, Math.min(r.height, clientY - r.top))
+    };
   };
 
   const handleTap = (clientX, clientY, e) => {
@@ -481,11 +572,12 @@ function attachPageFlipTapZones(stage) {
       e.preventDefault();
       e.stopPropagation();
     }
-    const r = stage.getBoundingClientRect();
+    const r = getBookRect();
     const x = clientX - r.left;
-    const corner = (clientY - r.top) < r.height / 2 ? "top" : "bottom";
-    if (x < r.width * 0.30) flipPage(-1, corner);
-    else if (x > r.width * 0.70) flipPage(1, corner);
+    const y = Math.max(0, Math.min(r.height, clientY - r.top));
+    const corner = y < r.height / 2 ? "top" : "bottom";
+    if (clientX < r.left || x < r.width * 0.35) flipPage(-1, corner);
+    else if (clientX > r.right || x > r.width * 0.65) flipPage(1, corner);
     else toggleControls();
   };
 
@@ -525,7 +617,7 @@ function attachPageFlipTapZones(stage) {
     return true;
   };
 
-  stage.addEventListener("touchstart", (e) => {
+  inputLayer.addEventListener("touchstart", (e) => {
     if (e.touches.length !== 1) return;
     sx = e.touches[0].clientX;
     sy = e.touches[0].clientY;
@@ -534,7 +626,7 @@ function attachPageFlipTapZones(stage) {
     dragging = false;
   }, { passive: true });
 
-  stage.addEventListener("touchmove", (e) => {
+  inputLayer.addEventListener("touchmove", (e) => {
     if (!e.touches.length) return;
     const t0 = e.touches[0];
     if (!maybeStartDrag(t0.clientX, t0.clientY, e)) {
@@ -542,7 +634,7 @@ function attachPageFlipTapZones(stage) {
     }
   }, { passive: false });
 
-  stage.addEventListener("touchend", (e) => {
+  inputLayer.addEventListener("touchend", (e) => {
     if (!e.changedTouches.length) return;
     const t0 = e.changedTouches[0];
     if (finishDrag(t0.clientX, t0.clientY, e)) return;
@@ -555,7 +647,7 @@ function attachPageFlipTapZones(stage) {
     }
   }, { passive: false });
 
-  stage.addEventListener("mousedown", (e) => {
+  inputLayer.addEventListener("mousedown", (e) => {
     if (Date.now() - lastTouchTap < 600) return;
     pointerActive = true;
     dragging = false;
@@ -564,13 +656,13 @@ function attachPageFlipTapZones(stage) {
     st = Date.now();
   });
 
-  stage.addEventListener("mousemove", (e) => {
+  inputLayer.addEventListener("mousemove", (e) => {
     if (!maybeStartDrag(e.clientX, e.clientY, e)) {
       moveDrag(e.clientX, e.clientY, e);
     }
   });
 
-  stage.addEventListener("mouseup", (e) => {
+  inputLayer.addEventListener("mouseup", (e) => {
     if (!pointerActive || Date.now() - lastTouchTap < 600) return;
     if (finishDrag(e.clientX, e.clientY, e)) return;
     pointerActive = false;
@@ -579,7 +671,7 @@ function attachPageFlipTapZones(stage) {
     if (Date.now() - st < 360 && dx < 8 && dy < 8) handleTap(e.clientX, e.clientY, e);
   });
 
-  stage.addEventListener("mouseleave", (e) => {
+  inputLayer.addEventListener("mouseleave", (e) => {
     if (dragging) finishDrag(e.clientX, e.clientY, e);
     pointerActive = false;
   });
@@ -1105,14 +1197,20 @@ function initReaderGestures() {
 function flipPage(dir, corner = "top") {
   if (rMode === "flip") {
     if (!pageFlipBook) return;
+    const current = typeof pageFlipBook.getCurrentPageIndex === "function"
+      ? pageFlipBook.getCurrentPageIndex()
+      : rPageIdx;
+    if (Number.isFinite(current) && current !== rPageIdx) {
+      rPageIdx = Math.max(0, Math.min(readerPages.length - 1, current));
+      updateProgress();
+    }
     const next = rPageIdx + dir;
     if (next < 0 || next >= readerPages.length) {
       if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
       return;
     }
     if (typeof pageFlipBook.getState === "function" && pageFlipBook.getState() !== "read") return;
-    if (dir > 0) pageFlipBook.flipNext(corner);
-    else pageFlipBook.flipPrev(corner);
+    pageFlipBook.flip(next, corner);
     return;
   }
   const next = rPageIdx + dir;
