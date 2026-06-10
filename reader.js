@@ -367,61 +367,7 @@ function getPageFlipBookSize(stage) {
 
 async function preparePageFlipImages(width, height, initSeq) {
   clearPageFlipRenderUrls();
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const maxPixels = 2200;
-  const scale = Math.min(dpr, maxPixels / Math.max(width, height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
-  const ctx = canvas.getContext("2d", { alpha: false });
-  const pageAspect = canvas.width / canvas.height;
-  const renderUrls = [];
-  const createdUrls = [];
-
-  for (const src of readerPages) {
-    if (initSeq !== pageFlipInitSeq) {
-      createdUrls.forEach((url) => URL.revokeObjectURL(url));
-      return null;
-    }
-
-    const img = await loadReaderImage(src);
-    if (!img) {
-      renderUrls.push(src);
-      continue;
-    }
-
-    const imgAspect = (img.naturalWidth || img.width) / Math.max(1, img.naturalHeight || img.height);
-    if (Math.abs(imgAspect - pageAspect) < 0.01) {
-      renderUrls.push(src);
-      continue;
-    }
-
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    let drawW = canvas.width;
-    let drawH = Math.round(drawW / imgAspect);
-    if (drawH > canvas.height) {
-      drawH = canvas.height;
-      drawW = Math.round(drawH * imgAspect);
-    }
-    const dx = Math.round((canvas.width - drawW) / 2);
-    const dy = Math.round((canvas.height - drawH) / 2);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(img, dx, dy, drawW, drawH);
-
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.95));
-    if (!blob) {
-      renderUrls.push(src);
-      continue;
-    }
-    const url = URL.createObjectURL(blob);
-    createdUrls.push(url);
-    renderUrls.push(url);
-  }
-
-  pageFlipRenderUrls = createdUrls;
-  return renderUrls;
+  return readerPages;
 }
 
 /* ===== RENDER PAGE ===== */
@@ -487,13 +433,19 @@ function renderPage() {
     const stage = document.createElement("div"); stage.className = "pageflip-stage"; stage.id = "flipStage";
     const hitLayer = document.createElement("div"); hitLayer.className = "pageflip-hit-layer";
     stage.appendChild(hitLayer);
+    // Show current page as a placeholder while the library loads
+    const placeholder = document.createElement("img");
+    placeholder.className = "pageflip-placeholder";
+    placeholder.src = readerPages[rPageIdx];
+    placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff;z-index:1;";
+    stage.appendChild(placeholder);
     container.appendChild(stage);
-    setTimeout(() => initPageFlip(stage), 30);
+    setTimeout(() => initPageFlip(stage, placeholder), 30);
   }
 }
 
 /* ===== PAGE-FLIP LIBRARY MODE ===== */
-async function initPageFlip(stage) {
+async function initPageFlip(stage, placeholder) {
   const initSeq = ++pageFlipInitSeq;
   if (rMode !== "flip" || !stage) return;
   if (!window.St?.PageFlip) {
@@ -523,9 +475,9 @@ async function initPageFlip(stage) {
     maxShadowOpacity: 0.42,
     flippingTime: 620,
     mobileScrollSupport: false,
-    swipeDistance: 24,
+    swipeDistance: 12,
     showPageCorners: false,
-    disableFlipByClick: true,
+    disableFlipByClick: false,
     useMouseEvents: false
   });
 
@@ -538,6 +490,8 @@ async function initPageFlip(stage) {
   });
 
   pageFlipBook.loadFromImages(flipImages);
+  // Remove placeholder once the library is rendered
+  if (placeholder && placeholder.parentNode) placeholder.remove();
   attachPageFlipTapZones(stage);
 }
 
@@ -551,6 +505,7 @@ function destroyLibraryPageFlip() {
 
 function attachPageFlipTapZones(stage) {
   let sx = 0, sy = 0, st = 0, pointerActive = false, dragging = false, lastTouchTap = 0;
+  let lastMoveX = 0, lastMoveT = 0, swipeVelocity = 0;
   const inputLayer = stage.querySelector(".pageflip-hit-layer") || stage;
 
   const getBookRect = () => {
@@ -585,8 +540,11 @@ function attachPageFlipTapZones(stage) {
     if (!pointerActive || dragging || !pageFlipBook) return false;
     const dx = clientX - sx;
     const dy = clientY - sy;
-    if (Math.hypot(dx, dy) < 9 || Math.abs(dx) < 7) return false;
+    if (Math.hypot(dx, dy) < 5 || Math.abs(dx) < 4) return false;
     dragging = true;
+    lastMoveX = clientX;
+    lastMoveT = Date.now();
+    swipeVelocity = 0;
     pageFlipBook.startUserTouch(getBookPoint(sx, sy));
     pageFlipBook.userMove(getBookPoint(clientX, clientY), true);
     if (e) {
@@ -598,6 +556,14 @@ function attachPageFlipTapZones(stage) {
 
   const moveDrag = (clientX, clientY, e) => {
     if (!dragging || !pageFlipBook) return;
+    // Track velocity for flick detection
+    const now = Date.now();
+    const dt = now - lastMoveT;
+    if (dt > 0) {
+      swipeVelocity = (clientX - lastMoveX) / dt; // px/ms
+    }
+    lastMoveX = clientX;
+    lastMoveT = now;
     pageFlipBook.userMove(getBookPoint(clientX, clientY), true);
     if (e) {
       e.preventDefault();
@@ -607,6 +573,19 @@ function attachPageFlipTapZones(stage) {
 
   const finishDrag = (clientX, clientY, e) => {
     if (!dragging || !pageFlipBook) return false;
+    const dx = clientX - sx;
+    const dt = Date.now() - st;
+    const absDx = Math.abs(dx);
+    // Detect flick: quick swipe with enough distance OR velocity
+    const isFlick = (absDx > 15 && dt < 500) || Math.abs(swipeVelocity) > 0.3;
+    const r = getBookRect();
+    const corner = (sy - r.top) < r.height / 2 ? "top" : "bottom";
+
+    if (isFlick && absDx > 10) {
+      const ctrl = pageFlipBook.getFlipController();
+      if (ctrl) ctrl.forceFlip = true;
+    }
+
     pageFlipBook.userStop(getBookPoint(clientX, clientY), false);
     dragging = false;
     pointerActive = false;
@@ -624,6 +603,7 @@ function attachPageFlipTapZones(stage) {
     st = Date.now();
     pointerActive = true;
     dragging = false;
+    swipeVelocity = 0;
   }, { passive: true });
 
   inputLayer.addEventListener("touchmove", (e) => {
@@ -654,6 +634,7 @@ function attachPageFlipTapZones(stage) {
     sx = e.clientX;
     sy = e.clientY;
     st = Date.now();
+    swipeVelocity = 0;
   });
 
   inputLayer.addEventListener("mousemove", (e) => {
@@ -966,7 +947,7 @@ function attachCurlGestures(canvas) {
     if (!dragging || e.touches.length !== 1) return;
     const x = e.touches[0].clientX, y = e.touches[0].clientY;
     const dx = x - sx, dy = y - sy;
-    if (!moved && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+    if (!moved && Math.abs(dx) > 5 && Math.abs(dx) > Math.abs(dy)) {
       dir = dx < 0 ? 1 : -1;
       if (rPageIdx + dir < 0 || rPageIdx + dir >= readerPages.length) { dragging = false; return; }
       moved = true;
@@ -992,9 +973,9 @@ function attachCurlGestures(canvas) {
     const dx = e.changedTouches[0].clientX - sx;
     const fold = foldFromDelta(dx);
     const frac = fold / curlCW;
-    const flick = dt < 320 && Math.abs(dx) > 28;
-    if (dir > 0) { (flick || frac < 0.62) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
-    else { (flick || frac > 0.38) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
+    const flick = dt < 380 && Math.abs(dx) > 18;
+    if (dir > 0) { (flick || frac < 0.72) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
+    else { (flick || frac > 0.28) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
   }, { passive: true });
 
   canvas.addEventListener("click", (e) => {
@@ -1154,7 +1135,7 @@ function initReaderGestures() {
     const dy = tch.clientY - sy;
 
     if (!moved) {
-      if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+      if (Math.abs(dx) < 5 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
       slideDir = dx < 0 ? 1 : -1;
       slideState = prepareClickSlide(slideDir);
       if (!slideState) { tracking = false; return; }
@@ -1179,8 +1160,8 @@ function initReaderGestures() {
     if (!moved || !slideState) return;
     clickSwipeLastTouch = Date.now();
     const progress = Math.abs(slideOffset) / Math.max(1, slideState.width);
-    const flick = Math.abs(dx) > 30 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 360;
-    const commit = flick || progress > 0.32;
+    const flick = Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 400;
+    const commit = flick || progress > 0.22;
     animateClickSlide(slideDir, slideOffset, commit, slideState);
   }, { passive: true });
 

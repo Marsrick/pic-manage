@@ -25,6 +25,8 @@ const T = {
     uploadOk: "文件上传成功！", uploadErr: "上传失败，请重试",
     confirmDel: "确认删除此文件？此操作无法恢复！", deleteOk: "文件已删除",
     emptyFiles: "暂无文件", emptyVault: "暂无私密文件，点击上方区域导入",
+    moveToPrivate: "移入私密空间", moveToPrivateOk: "已移入私密空间",
+    moveToPublic: "设为公开", moveToPublicOk: "已设为公开",
     navFiles: "文件", navFeedback: "问题反馈", navVault: "管理空间",
     adminLogout: "已退出管理员模式",
     readerBack: "返回", chapterList: "目录", btnChapter: "目录",
@@ -69,6 +71,8 @@ const T = {
     uploadOk: "File uploaded!", uploadErr: "Upload failed, try again",
     confirmDel: "Delete this file? This cannot be undone!", deleteOk: "File deleted",
     emptyFiles: "No files yet", emptyVault: "No private files. Import above.",
+    moveToPrivate: "Move to Private", moveToPrivateOk: "Moved to private space",
+    moveToPublic: "Make Public", moveToPublicOk: "File is now public",
     navFiles: "Files", navFeedback: "Feedback", navVault: "Admin",
     adminLogout: "Admin mode logged out",
     readerBack: "Back", chapterList: "Chapters", btnChapter: "Chapters",
@@ -180,7 +184,7 @@ async function sha256(msg) {
 function toast(msg, type = "info") {
   const el = document.getElementById("toast");
   el.textContent = msg; el.className = `toast show ${type}`;
-  setTimeout(() => el.classList.remove("show"), 2800);
+  setTimeout(() => el.classList.remove("show"), 1400);
 }
 
 /* ===== NAV & VIEWS ===== */
@@ -406,6 +410,17 @@ function emptyPlaceholderHtml() {
 
 function renderFolderRow(name, base) {
   const count = base.filter(f => f.folder === name).length;
+  const hasPrivate = base.some(f => f.folder === name && f.isPrivate);
+  const hasPublic = base.some(f => f.folder === name && !f.isPrivate);
+
+  const privateBtn = (isAdmin && adminKey && hasPublic)
+    ? `<button class="file-action-btn folder-private-btn" title="移入私密空间"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></button>`
+    : "";
+
+  const publicBtn = (isAdmin && adminKey && hasPrivate)
+    ? `<button class="file-action-btn folder-public-btn" title="设为公开"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></button>`
+    : "";
+
   return `
     <div class="file-row folder-row" data-folder="${name}">
       <div class="file-icon-wrap folder"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
@@ -414,6 +429,8 @@ function renderFolderRow(name, base) {
         <div class="file-meta-row"><span class="file-size-text">${count} 项</span></div>
       </div>
       <div class="file-row-actions">
+        ${privateBtn}
+        ${publicBtn}
         <button class="file-action-btn folder-add-btn" title="添加文件"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v9m4.5-4.5h-9M3.75 6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l1.621 1.62a1.5 1.5 0 001.061.44H18A2.25 2.25 0 0120.25 8.5v9.25A2.25 2.25 0 0118 20H6a2.25 2.25 0 01-2.25-2.25V6z"/></svg></button>
         <button class="file-action-btn folder-zip-btn" title="压缩文件夹"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></button>
         <button class="file-action-btn danger folder-del-btn" title="删除文件夹"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg></button>
@@ -438,7 +455,7 @@ function bindFolderEvents(area) {
 
   area.querySelectorAll(".folder-row").forEach(row => {
     row.addEventListener("click", e => {
-      if (e.target.closest(".folder-add-btn") || e.target.closest(".folder-del-btn") || e.target.closest(".folder-zip-btn")) return;
+      if (e.target.closest(".folder-add-btn") || e.target.closest(".folder-del-btn") || e.target.closest(".folder-zip-btn") || e.target.closest(".folder-private-btn") || e.target.closest(".folder-public-btn")) return;
       currentFolder = row.dataset.folder;
       refreshFileList();
     });
@@ -474,6 +491,62 @@ function bindFolderEvents(area) {
       e.stopPropagation();
       compressFolderName = btn.closest(".folder-row").dataset.folder;
       document.getElementById("formatDialog").classList.add("active");
+    });
+  });
+  area.querySelectorAll(".folder-private-btn").forEach(btn => {
+    btn.addEventListener("click", async e => {
+      e.stopPropagation();
+      const name = btn.closest(".folder-row").dataset.folder;
+      if (!confirm(`确定要将文件夹「${name}」中的所有文件移入私密空间吗？`)) return;
+      if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
+      const all = await dbAll();
+      const files = all.filter(x => x.folder === name && !x.isPrivate);
+      if (files.length === 0) { toast("没有需要加密的公开文件", "info"); return; }
+
+      toast("正在加密...", "info");
+      let count = 0;
+      for (const f of files) {
+        try {
+          const buf = await f.data.arrayBuffer();
+          const enc = await encryptBuf(buf, adminKey);
+          f.data = new Blob([enc]);
+          f.isPrivate = true;
+          await dbPut(f);
+          count++;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      toast(`已成功加密 ${count} 个文件`, "success");
+      refreshFileList();
+    });
+  });
+  area.querySelectorAll(".folder-public-btn").forEach(btn => {
+    btn.addEventListener("click", async e => {
+      e.stopPropagation();
+      const name = btn.closest(".folder-row").dataset.folder;
+      if (!confirm(`确定要将文件夹「${name}」中的所有文件设为公开吗？`)) return;
+      if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
+      const all = await dbAll();
+      const files = all.filter(x => x.folder === name && x.isPrivate);
+      if (files.length === 0) { toast("没有需要解密的私密文件", "info"); return; }
+
+      toast("正在解密并设为公开...", "info");
+      let count = 0;
+      for (const f of files) {
+        try {
+          const enc = await f.data.arrayBuffer();
+          const dec = await decryptBuf(enc, adminKey);
+          f.data = new Blob([dec]);
+          f.isPrivate = false;
+          await dbPut(f);
+          count++;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      toast(`已成功公开 ${count} 个文件`, "success");
+      refreshFileList();
     });
   });
   const back = area.querySelector("#folderBackRow");
@@ -1406,6 +1479,12 @@ function openActionMenu(id) {
     extractBtn.style.display = probableArchive ? "" : "none";
     extractBtn.querySelector("span").textContent =
       (isAdmin || ["zip","cbz","cbr","7z","tar","gz","tgz","rar"].includes(ext)) ? "解压" : "解压（管理员）";
+    // Show "Move to Private" only for admin on public files
+    const privateBtn = menu.querySelector('[data-act="moveToPrivate"]');
+    if (privateBtn) privateBtn.style.display = (isAdmin && adminKey && !f.isPrivate) ? "" : "none";
+    // Show "Make Public" only for admin on private files
+    const publicBtn = menu.querySelector('[data-act="moveToPublic"]');
+    if (publicBtn) publicBtn.style.display = (isAdmin && adminKey && f.isPrivate) ? "" : "none";
     menu.classList.add("active");
   });
 }
@@ -1421,7 +1500,11 @@ async function handleActionClick(act) {
   if (!id) return;
   if (act === "rename") openRenameDialog(id);
   else if (act === "move") openMoveDialog([id]);
-  else if (act === "delete") {
+  else if (act === "moveToPrivate") {
+    await moveFileToPrivate(id);
+  } else if (act === "moveToPublic") {
+    await moveFileToPublic(id);
+  } else if (act === "delete") {
     if (confirm(t("confirmDel"))) {
       await dbDel(id);
       toast(t("deleteOk"), "success");
@@ -1429,6 +1512,46 @@ async function handleActionClick(act) {
     }
   } else if (act === "extract") {
     extractFileById(id);
+  }
+}
+
+/* ===== MOVE FILE TO PRIVATE (admin encrypts a public file) ===== */
+async function moveFileToPrivate(id) {
+  if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
+  const f = await dbGet(id);
+  if (!f) return;
+  if (f.isPrivate) { toast("该文件已是私密文件", "info"); return; }
+  try {
+    const buf = await f.data.arrayBuffer();
+    const enc = await encryptBuf(buf, adminKey);
+    f.data = new Blob([enc]);
+    f.isPrivate = true;
+    await dbPut(f);
+    toast(t("moveToPrivateOk"), "success");
+    refreshFileList();
+  } catch (e) {
+    console.error("[moveToPrivate]", e);
+    toast("操作失败: " + (e.message || e), "error");
+  }
+}
+
+/* ===== MOVE FILE TO PUBLIC (admin decrypts a private file) ===== */
+async function moveFileToPublic(id) {
+  if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
+  const f = await dbGet(id);
+  if (!f) return;
+  if (!f.isPrivate) { toast("该文件已是公开文件", "info"); return; }
+  try {
+    const enc = await f.data.arrayBuffer();
+    const dec = await decryptBuf(enc, adminKey);
+    f.data = new Blob([dec]);
+    f.isPrivate = false;
+    await dbPut(f);
+    toast(t("moveToPublicOk"), "success");
+    refreshFileList();
+  } catch (e) {
+    console.error("[moveToPublic]", e);
+    toast(t("decryptErr"), "error");
   }
 }
 
