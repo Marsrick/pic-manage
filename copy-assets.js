@@ -1,8 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const srcFiles = ['index.html', 'style.css', 'app.js', 'reader.js', '使用说明.md', 'logo.png'];
-const srcDirs = ['lib'];
+const srcFiles = [
+  'index.html',
+  'style.css',
+  'app.js',
+  'reader.js',
+  'pwa.js',
+  'pwa.webmanifest',
+  'service-worker.js',
+  '使用说明.md',
+  'logo.png'
+];
+const srcDirs = ['assets', 'lib'];
 const destDir = path.join(__dirname, 'www');
 
 // Clean and recreate destination directory
