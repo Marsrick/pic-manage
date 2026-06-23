@@ -305,7 +305,126 @@ html, body {
   align-items: center;
 }
 
+.file-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 16px 10px;
+}
+
+.sort-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.sort-control select {
+  min-width: 0;
+  max-width: 150px;
+  height: 34px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font: inherit;
+  outline: none;
+}
+
+.sort-control select:focus { border-color: var(--accent-blue); }
+
+.view-switcher {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+
+.view-switch-btn {
+  width: 32px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.view-switch-btn svg { width: 17px; height: 17px; }
+.view-switch-btn.active {
+  background: var(--bg-card);
+  color: var(--accent-blue);
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.08);
+}
+
 .file-list { padding: 0 16px; }
+
+.file-list.grid-view {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.file-list.grid-view .file-row {
+  min-width: 0;
+  min-height: 152px;
+  padding: 14px 10px 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.file-list.grid-view .file-row::after { display: none; }
+.file-list.grid-view .file-icon-wrap {
+  width: 48px;
+  height: 48px;
+  align-self: center;
+}
+.file-list.grid-view .file-icon-wrap svg { width: 25px; height: 25px; }
+.file-list.grid-view .file-info { width: 100%; text-align: center; }
+.file-list.grid-view .file-name { font-size: 0.8rem; }
+.file-list.grid-view .file-meta-row {
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+}
+.file-list.grid-view .file-size-text,
+.file-list.grid-view .file-date-text { font-size: 0.63rem; }
+.file-list.grid-view .file-row-actions {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+}
+.file-list.grid-view .folder-row .file-row-actions {
+  position: static;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.file-list.grid-view .back-row {
+  grid-column: 1 / -1;
+  min-height: auto;
+  flex-direction: row;
+  align-items: center;
+}
+.file-list.grid-view .back-row .file-info { text-align: left; }
+.file-list.grid-view .empty-placeholder { grid-column: 1 / -1; }
+.file-list.grid-view .file-checkbox {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+}
 
 .file-row {
   display: flex;
@@ -1386,6 +1505,62 @@ body.file-touch-moving {
 
 .choice-option-text h4 { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
 .choice-option-text p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+
+.import-progress {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 18px 16px calc(18px + var(--safe-bottom));
+  background: rgba(15, 23, 42, 0.18);
+  pointer-events: none;
+}
+
+.import-progress.active { display: flex; }
+
+.import-progress-card {
+  width: min(100%, 398px);
+  padding: 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2);
+}
+
+.import-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+}
+
+.import-progress-head span { color: var(--text-muted); }
+.import-progress-track {
+  height: 6px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+}
+.import-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gradient-blue);
+  transition: width 0.2s ease;
+}
+.import-progress-file {
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .choice-cancel {
   background: none;

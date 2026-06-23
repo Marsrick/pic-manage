@@ -113,6 +113,27 @@
       <div class="file-section-title" id="fileSectionTitle">
         <span data-i18n="recentFiles">最近文件</span>
       </div>
+      <div class="file-toolbar" aria-label="文件视图工具栏">
+        <label class="sort-control" for="sortSelect">
+          <span data-i18n="sortLabel">排序</span>
+          <select id="sortSelect" onchange="changeFileSort(this.value)">
+            <option value="date-desc" data-i18n="sortNewest">时间：最新</option>
+            <option value="date-asc" data-i18n="sortOldest">时间：最早</option>
+            <option value="name-asc" data-i18n="sortNameAsc">名称：A-Z</option>
+            <option value="name-desc" data-i18n="sortNameDesc">名称：Z-A</option>
+            <option value="size-desc" data-i18n="sortSizeDesc">大小：从大到小</option>
+            <option value="size-asc" data-i18n="sortSizeAsc">大小：从小到大</option>
+          </select>
+        </label>
+        <div class="view-switcher" role="group" aria-label="视图方式">
+          <button class="view-switch-btn active" id="listViewBtn" type="button" onclick="setFileView('list')" title="列表视图" aria-label="列表视图">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12m-12 5.25h12m-12 5.25h12M3.75 6.75h.008v.008H3.75V6.75zm0 5.25h.008v.008H3.75V12zm0 5.25h.008v.008H3.75v-.008z"/></svg>
+          </button>
+          <button class="view-switch-btn" id="gridViewBtn" type="button" onclick="setFileView('grid')" title="网格视图" aria-label="网格视图">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75h6.5v6.5h-6.5v-6.5zm10 0h6.5v6.5h-6.5v-6.5zm-10 10h6.5v6.5h-6.5v-6.5zm10 0h6.5v6.5h-6.5v-6.5z"/></svg>
+          </button>
+        </div>
+      </div>
       <div class="file-list" id="fileListArea"></div>
     </div>
 
@@ -144,7 +165,7 @@
     </div>
 
     <!-- Hidden File Input for Uploads -->
-    <input type="file" id="fileInput" class="hidden-input">
+    <input type="file" id="fileInput" class="hidden-input" multiple>
 
   </main>
   <!-- ===== COMPRESS FAB (visible in multi-select mode) ===== -->
@@ -178,7 +199,7 @@
 <div class="choice-dialog" id="choiceDialog">
   <div class="choice-card">
     <h3 data-i18n="storageChoice">存储方式</h3>
-    <p data-i18n="storageChoiceDesc">选择该文件的存储方式</p>
+    <p id="storageChoiceDesc" data-i18n="storageChoiceDesc">选择该文件的存储方式</p>
     <div class="choice-option" onclick="saveFileAs(true)">
       <div class="choice-option-icon private">
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
@@ -198,6 +219,18 @@
       </div>
     </div>
     <button class="choice-cancel" onclick="cancelUpload()" data-i18n="btnCancel">取消</button>
+  </div>
+</div>
+
+<!-- ===== BATCH IMPORT PROGRESS ===== -->
+<div class="import-progress" id="importProgress" aria-live="polite">
+  <div class="import-progress-card">
+    <div class="import-progress-head">
+      <strong id="importProgressTitle" data-i18n="importingFiles">正在导入文件</strong>
+      <span id="importProgressCount">0 / 0</span>
+    </div>
+    <div class="import-progress-track"><span id="importProgressBar"></span></div>
+    <div class="import-progress-file" id="importProgressFile"></div>
   </div>
 </div>
 

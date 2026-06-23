@@ -44,7 +44,11 @@ const T = {
     enableLockLabel: "启用启动手势锁",
     btnSetNormalLock: "设置/修改手势密码",
     gestureSetupNormal: "设置启动手势密码",
-    gestureNormalSetOk: "启动手势锁设置成功！"
+    gestureNormalSetOk: "启动手势锁设置成功！",
+    sortLabel: "排序", sortNewest: "时间：最新", sortOldest: "时间：最早",
+    sortNameAsc: "名称：A-Z", sortNameDesc: "名称：Z-A",
+    sortSizeDesc: "大小：从大到小", sortSizeAsc: "大小：从小到大",
+    importingFiles: "正在导入文件"
   },
   en: {
     myFiles: "My Files", adminSpace: "Admin Space", adminMode: "Admin",
@@ -90,7 +94,11 @@ const T = {
     enableLockLabel: "Enable Startup Lock",
     btnSetNormalLock: "Set/Change Gesture Password",
     gestureSetupNormal: "Set Normal Gesture Password",
-    gestureNormalSetOk: "Startup gesture lock enabled successfully!"
+    gestureNormalSetOk: "Startup gesture lock enabled successfully!",
+    sortLabel: "Sort", sortNewest: "Date: Newest", sortOldest: "Date: Oldest",
+    sortNameAsc: "Name: A-Z", sortNameDesc: "Name: Z-A",
+    sortSizeDesc: "Size: Largest", sortSizeAsc: "Size: Smallest",
+    importingFiles: "Importing files"
   }
 };
 
@@ -103,6 +111,10 @@ let gestureStep = 0; // 0=verify, 1=setup-first, 2=setup-confirm
 let firstPattern = "";
 let currentFilter = "all";
 let pendingFile = null;
+let pendingFiles = [];
+const FILE_SORT_OPTIONS = ["date-desc", "date-asc", "name-asc", "name-desc", "size-desc", "size-asc"];
+let fileSort = FILE_SORT_OPTIONS.includes(localStorage.getItem("fileSort")) ? localStorage.getItem("fileSort") : "date-desc";
+let fileView = localStorage.getItem("fileView") === "grid" ? "grid" : "list";
 let isSettingNormalGesture = false;
 let isStartupUnlock = false;
 let multiSelectMode = false;
@@ -251,6 +263,39 @@ function triggerFolderUpload(folderName) {
   document.getElementById("fileInput").click();
 }
 
+function sortFiles(files) {
+  const [field, direction] = fileSort.split("-");
+  const multiplier = direction === "asc" ? 1 : -1;
+  return [...files].sort((a, b) => {
+    let result = 0;
+    if (field === "name") result = (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+    else if (field === "size") result = (a.size || 0) - (b.size || 0);
+    else result = (a.uploadedAt || 0) - (b.uploadedAt || 0);
+    return result * multiplier;
+  });
+}
+
+function changeFileSort(value) {
+  fileSort = FILE_SORT_OPTIONS.includes(value) ? value : "date-desc";
+  localStorage.setItem("fileSort", fileSort);
+  refreshFileList();
+}
+
+function setFileView(view) {
+  fileView = view === "grid" ? "grid" : "list";
+  localStorage.setItem("fileView", fileView);
+  applyFileView();
+}
+
+function applyFileView() {
+  const area = document.getElementById("fileListArea");
+  if (area) area.classList.toggle("grid-view", fileView === "grid");
+  document.getElementById("listViewBtn")?.classList.toggle("active", fileView === "list");
+  document.getElementById("gridViewBtn")?.classList.toggle("active", fileView === "grid");
+  const select = document.getElementById("sortSelect");
+  if (select) select.value = fileSort;
+}
+
 /* ===== FILE UTILS ===== */
 function fmtSize(b) {
   if (!b) return "0 B";
@@ -359,6 +404,7 @@ function getIconSVG(name) {
 /* ===== RENDER FILE LIST (Public) ===== */
 async function refreshFileList() {
   const area = document.getElementById("fileListArea");
+  applyFileView();
   try {
     const all = await dbAll();
     const base = isAdmin ? all : all.filter(f => !f.isPrivate);
@@ -369,8 +415,9 @@ async function refreshFileList() {
 
     // Grouped view (folders + root files) only at root, "all" filter, no search.
     if (currentFolder === null && !searching && currentFilter === "all") {
-      const folderNames = [...new Set(base.filter(f => f.folder).map(f => f.folder))].sort();
-      const rootFiles = base.filter(f => !f.folder);
+      const folderNames = [...new Set(base.filter(f => f.folder).map(f => f.folder))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }) * (fileSort === "name-desc" ? -1 : 1));
+      const rootFiles = sortFiles(base.filter(f => !f.folder));
 
       let html = folderNames.map(n => renderFolderRow(n, base)).join("");
       html += rootFiles.map(f => renderFileRow(f, isAdmin)).join("");
@@ -388,6 +435,7 @@ async function refreshFileList() {
     else filtered = base;
     if (currentFilter !== "all") filtered = filtered.filter(f => getFileCat(f.name) === currentFilter);
     if (q) filtered = filtered.filter(f => f.name.toLowerCase().includes(q));
+    filtered = sortFiles(filtered);
 
     let html = "";
     if (currentFolder !== null) html += renderBackRow(currentFolder);
@@ -1292,17 +1340,28 @@ function initUpload() {
     zone.addEventListener("click", () => input.click());
     zone.addEventListener("dragover", e => { e.preventDefault(); zone.style.borderColor = "var(--accent-blue)"; });
     zone.addEventListener("dragleave", () => { zone.style.borderColor = ""; });
-    zone.addEventListener("drop", e => { e.preventDefault(); zone.style.borderColor = ""; if (e.dataTransfer.files[0]) prepUpload(e.dataTransfer.files[0]); });
+    zone.addEventListener("drop", e => { e.preventDefault(); zone.style.borderColor = ""; if (e.dataTransfer.files.length) prepUpload(e.dataTransfer.files); });
   }
   if (input) {
-    input.addEventListener("change", e => { if (e.target.files[0]) prepUpload(e.target.files[0]); });
+    input.addEventListener("change", e => { if (e.target.files.length) prepUpload(e.target.files); });
   }
 }
 
-function prepUpload(file) {
-  if (file.size > 500 * 1024 * 1024) { toast(t("fileTooLarge"), "error"); return Promise.resolve(false); }
-  pendingFile = file;
+function prepUpload(files) {
+  const isFileList = typeof FileList !== "undefined" && files instanceof FileList;
+  const selected = Array.from(isFileList || Array.isArray(files) ? files : [files]);
+  const valid = selected.filter(file => file && file.size <= 500 * 1024 * 1024);
+  const skipped = selected.length - valid.length;
+  if (skipped) toast(`${skipped} 个文件超过 500MB，已跳过`, "error");
+  if (!valid.length) return Promise.resolve(false);
+
+  pendingFiles = valid;
+  pendingFile = valid[0];
   if (isAdmin) {
+    const desc = document.getElementById("storageChoiceDesc");
+    if (desc) desc.textContent = valid.length > 1
+      ? `为选中的 ${valid.length} 个文件选择统一存储方式`
+      : "选择该文件的存储方式";
     document.getElementById("choiceDialog").classList.add("active");
     return Promise.resolve(false);
   } else {
@@ -1311,34 +1370,76 @@ function prepUpload(file) {
   }
 }
 
-function cancelUpload() { pendingFile = null; uploadTargetFolder = null; document.getElementById("choiceDialog").classList.remove("active"); document.getElementById("fileInput").value = ""; }
+function cancelUpload() {
+  pendingFile = null;
+  pendingFiles = [];
+  uploadTargetFolder = null;
+  document.getElementById("choiceDialog").classList.remove("active");
+  document.getElementById("fileInput").value = "";
+}
+
+function updateImportProgress(done, total, fileName) {
+  const progress = document.getElementById("importProgress");
+  progress?.classList.add("active");
+  document.getElementById("importProgressCount").textContent = `${done} / ${total}`;
+  document.getElementById("importProgressBar").style.width = `${total ? (done / total) * 100 : 0}%`;
+  document.getElementById("importProgressFile").textContent = fileName || "";
+}
+
+function hideImportProgress() {
+  document.getElementById("importProgress")?.classList.remove("active");
+}
 
 async function saveFileAs(isPrivate) {
   document.getElementById("choiceDialog").classList.remove("active");
-  if (!pendingFile) return false;
+  const files = pendingFiles.length ? [...pendingFiles] : (pendingFile ? [pendingFile] : []);
+  if (!files.length) return false;
+  const folder = uploadTargetFolder || currentFolder || undefined;
+  let succeeded = 0;
+  const failed = [];
 
   try {
-    let data;
-    if (isPrivate) {
-      if (!adminKey) { toast(t("sessionExpired"), "error"); return false; }
-      const buf = await pendingFile.arrayBuffer();
-      const enc = await encryptBuf(buf, adminKey);
-      data = new Blob([enc]);
-    } else {
-      // Public files can be stored as Blob/File directly. Avoid arrayBuffer()
-      // here so large external files do not get copied into JS memory again.
-      data = pendingFile instanceof Blob
-        ? pendingFile
-        : new Blob([await pendingFile.arrayBuffer()], { type: pendingFile.type || "application/octet-stream" });
+    if (isPrivate && !adminKey) { toast(t("sessionExpired"), "error"); return false; }
+    updateImportProgress(0, files.length, files[0].name);
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      updateImportProgress(i, files.length, file.name);
+      try {
+        let data;
+        if (isPrivate) {
+          const buf = await file.arrayBuffer();
+          const enc = await encryptBuf(buf, adminKey);
+          data = new Blob([enc]);
+        } else {
+          data = file instanceof Blob
+            ? file
+            : new Blob([await file.arrayBuffer()], { type: file.type || "application/octet-stream" });
+        }
+        await dbAdd({ name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt: Date.now() + i, data, folder });
+        succeeded++;
+      } catch (error) {
+        console.error("[batch-upload]", file.name, error);
+        failed.push(file.name);
+      }
     }
 
-    const folder = uploadTargetFolder || currentFolder || undefined;
-    await dbAdd({ name: pendingFile.name, size: pendingFile.size, type: pendingFile.type, isPrivate, uploadedAt: Date.now(), data, folder });
-    toast(t("uploadOk"), "success");
-    pendingFile = null; uploadTargetFolder = null; document.getElementById("fileInput").value = "";
+    updateImportProgress(files.length, files.length, succeeded === files.length ? "导入完成" : "部分文件导入失败");
+    if (failed.length) toast(`成功导入 ${succeeded} 个，失败 ${failed.length} 个`, succeeded ? "info" : "error");
+    else toast(files.length > 1 ? `已成功导入 ${succeeded} 个文件` : t("uploadOk"), "success");
     refreshFileList();
-    return true;
-  } catch (e) { console.error(e); toast(t("uploadErr"), "error"); return false; }
+    return failed.length === 0;
+  } catch (e) {
+    console.error(e);
+    toast(t("uploadErr"), "error");
+    return false;
+  } finally {
+    pendingFile = null;
+    pendingFiles = [];
+    uploadTargetFolder = null;
+    document.getElementById("fileInput").value = "";
+    setTimeout(hideImportProgress, 650);
+  }
 }
 
 async function dbGet(id) {
@@ -2290,6 +2391,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initBackgroundLock();
   initIOSFileReceive();
   refreshFileList();
+  applyFileView();
   
   updateSecuritySettingsUI();
 
