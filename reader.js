@@ -489,9 +489,20 @@ function isZipLikeReaderFile(name, blob) {
   return ["zip", "cbz"].includes(ext) || blob?.type === "application/zip";
 }
 
-function shouldUseLazyZipReader(name, blob) {
-  return isZipLikeReaderFile(name, blob)
-    && blob
+async function isZipLikeReaderBlob(name, blob) {
+  if (!blob) return false;
+  if (isZipLikeReaderFile(name, blob)) return true;
+  try {
+    const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+    return head[0] === 0x50 && head[1] === 0x4B && (head[2] === 0x03 || head[2] === 0x05 || head[2] === 0x07);
+  } catch (e) {
+    console.warn("[reader] zip header probe failed:", e);
+    return false;
+  }
+}
+
+async function shouldUseLazyZipReader(name, blob) {
+  return await isZipLikeReaderBlob(name, blob)
     && (blob.size >= READER_LAZY_ZIP_BYTES || /iphone|ipad|ipod|android/i.test(navigator.userAgent || ""));
 }
 
@@ -607,7 +618,7 @@ function requestReaderPageBlob(idx) {
 }
 
 async function extractImagesForReader(name, blob) {
-  if (shouldUseLazyZipReader(name, blob)) {
+  if (await shouldUseLazyZipReader(name, blob)) {
     try {
       return await createLazyZipReader(blob, name);
     } catch (e) {
