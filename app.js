@@ -138,7 +138,11 @@ let appBootDone = false;
 let currentFolder = null; // null = root; otherwise the folder name being viewed
 
 const DB = "PicManageDB";
+const DB_VERSION = 2;
 const STORE = "files";
+const CHUNK_STORE = "fileChunks";
+const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
+const IDB_CHUNK_BYTES = 8 * 1024 * 1024;
 
 /* ===== I18N UTILS ===== */
 function t(k) { return T[lang]?.[k] || k; }
@@ -158,16 +162,56 @@ function toggleLang() { lang = lang === "zh" ? "en" : "zh"; localStorage.setItem
 /* ===== DB ===== */
 function openDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open(DB, 1);
+    const r = indexedDB.open(DB, DB_VERSION);
     r.onerror = () => rej(r.error);
     r.onsuccess = () => { db = r.result; res(db); };
-    r.onupgradeneeded = e => { e.target.result.createObjectStore(STORE, { keyPath: "id", autoIncrement: true }); };
+    r.onupgradeneeded = e => {
+      const database = e.target.result;
+      if (!database.objectStoreNames.contains(STORE)) {
+        database.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
+      }
+      if (!database.objectStoreNames.contains(CHUNK_STORE)) {
+        const chunkStore = database.createObjectStore(CHUNK_STORE, { keyPath: "key" });
+        chunkStore.createIndex("fileId", "fileId", { unique: false });
+      }
+    };
   });
 }
 
-function dbAdd(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); let id = null; const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => { id = req.result; }; tx.oncomplete = () => res(id); tx.onerror = () => rej(tx.error || new Error("IndexedDB add failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB add aborted")); }); }
+function dbAddRaw(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); let id = null; const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => { id = req.result; }; tx.oncomplete = () => res(id); tx.onerror = () => rej(tx.error || new Error("IndexedDB add failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB add aborted")); }); }
 function dbAll() { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readonly"); const r = tx.objectStore(STORE).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
-function dbDel(id) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(id).onsuccess = () => res(); tx.onerror = () => rej(tx.error); }); }
+function dbPutRaw(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).put(obj); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("IndexedDB put aborted")); }); }
+function chunkKey(fileId, index) { return String(fileId) + ":" + String(index); }
+function dbPutChunk(fileId, index, data) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).put({ key: chunkKey(fileId, index), fileId, index, data }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk put failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk put aborted")); }); }
+function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const store = tx.objectStore(CHUNK_STORE); const idx = store.index("fileId"); const r = idx.getAll(IDBKeyRange.only(fileId)); r.onsuccess = () => res((r.result || []).sort((a, b) => a.index - b.index)); r.onerror = () => rej(r.error); }); }
+async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function dbBlobFromChunks(fileId, expectedCount) {
+  const chunks = await dbGetChunks(fileId);
+  if (expectedCount && chunks.length !== expectedCount) throw new Error("IndexedDB chunk missing");
+  return new Blob(chunks.map(c => c.data));
+}
+async function ensureFileData(f) { if (!f || f.data || !f.isChunked) return f; return { ...f, data: await dbBlobFromChunks(f.id, f.chunkCount) }; }
+async function dbAddChunked(obj) {
+  const data = obj.data;
+  const chunkCount = Math.ceil(data.size / IDB_CHUNK_BYTES);
+  const meta = { ...obj, data: undefined, isChunked: true, chunkSize: IDB_CHUNK_BYTES, chunkCount };
+  delete meta.data;
+  let id = null;
+  try {
+    id = await dbAddRaw(meta);
+    for (let index = 0; index < chunkCount; index++) {
+      const start = index * IDB_CHUNK_BYTES;
+      await dbPutChunk(id, index, data.slice(start, Math.min(start + IDB_CHUNK_BYTES, data.size)));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return id;
+  } catch (e) {
+    if (id) await dbDel(id).catch(() => {});
+    throw e;
+  }
+}
+function dbAdd(obj) { return (obj?.data instanceof Blob && obj.data.size > IDB_CHUNKED_BYTES) ? dbAddChunked(obj) : dbAddRaw(obj); }
+async function dbDel(id) { await dbDeleteChunks(id).catch(() => {}); return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 
 /* ===== CRYPTO ===== */
 async function deriveKey(gesture, salt) {
@@ -581,10 +625,13 @@ async function ensureComicCover(f, sourceBlob, force = false) {
   if (typeof extractFirstComicImageBlob !== "function") return null;
   coverGeneratingIds.add(f.id);
   try {
-    const thumb = await makeComicCoverThumb(f.name, sourceBlob || f.data);
+    const coverSource = sourceBlob || f.data || (await ensureFileData(f))?.data;
+    if (!coverSource) return null;
+    const thumb = await makeComicCoverThumb(f.name, coverSource);
     if (!thumb) return null;
-    const latest = await dbGet(f.id);
+    const latest = await dbGet(f.id, false);
     if (!latest || (latest.isPrivate && !isAdmin)) return null;
+    if (latest.isChunked) delete latest.data;
     latest.coverThumb = thumb;
     latest.coverSig = getCoverSignature(latest);
     await dbPut(latest);
@@ -603,8 +650,9 @@ async function saveComicCoverFromImage(f, imageBlob) {
   try {
     const thumb = await makeCoverThumbnailBlob(imageBlob);
     if (!thumb) return null;
-    const latest = await dbGet(f.id);
+    const latest = await dbGet(f.id, false);
     if (!latest || (latest.isPrivate && !isAdmin)) return null;
+    if (latest.isChunked) delete latest.data;
     latest.coverThumb = thumb;
     latest.coverSig = getCoverSignature(latest);
     await dbPut(latest);
@@ -834,9 +882,14 @@ function bindFolderEvents(area) {
       let count = 0;
       for (const f of files) {
         try {
-          const buf = await f.data.arrayBuffer();
-          const enc = await encryptBuf(buf, adminKey);
-          f.data = new Blob([enc]);
+          const full = await ensureFileData(f);
+          if (full.data.size > PRIVATE_CHUNKED_ENCRYPT_BYTES) {
+            f.data = await encryptBlobChunked(full.data, adminKey);
+          } else {
+            const buf = await full.data.arrayBuffer();
+            const enc = await encryptBuf(buf, adminKey);
+            f.data = new Blob([enc]);
+          }
           f.isPrivate = true;
           await dbPut(f);
           count++;
@@ -862,7 +915,8 @@ function bindFolderEvents(area) {
       let count = 0;
       for (const f of files) {
         try {
-          const enc = await f.data.arrayBuffer();
+          const full = await ensureFileData(f);
+          const enc = await full.data.arrayBuffer();
           const dec = await decryptBuf(enc, adminKey);
           f.data = new Blob([dec]);
           f.isPrivate = false;
@@ -924,8 +978,7 @@ function bindFileRowEvents(area) {
       e.stopPropagation();
       const row = btn.closest(".file-row");
       const id = Number(row.dataset.id);
-      const all = await dbAll();
-      const f = all.find(x => x.id === id);
+      const f = await dbGet(id);
       if (f) openFileView(f);
     });
   });
@@ -945,8 +998,7 @@ function bindFileRowEvents(area) {
         toggleSelection(id);
         return;
       }
-      const all = await dbAll();
-      const f = all.find(x => x.id === id);
+      const f = await dbGet(id);
       if (f) openFileView(f);
     });
     // Drag source: report file ids so folder targets can accept the drop.
@@ -1676,7 +1728,7 @@ function scheduleImportedCover(id, name, sourceBlob) {
     try {
       const thumb = await makeComicCoverThumb(name, sourceBlob);
       if (!thumb) return;
-      const latest = await dbGet(id);
+      const latest = await dbGet(id, false);
       if (!latest) return;
       latest.coverThumb = thumb;
       latest.coverSig = getCoverSignature(latest);
@@ -1750,17 +1802,35 @@ async function saveFileAs(isPrivate) {
   }
 }
 
-async function dbGet(id) {
+async function dbGet(id, includeData = true) {
   const all = await dbAll();
-  return all.find(x => x.id === id);
+  const f = all.find(x => x.id === id);
+  return includeData ? ensureFileData(f) : f;
 }
 
-function dbPut(obj) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(obj).onsuccess = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
+async function dbPut(obj) {
+  if (!obj) return;
+  if (obj.data instanceof Blob && obj.data.size > IDB_CHUNKED_BYTES) {
+    await dbDeleteChunks(obj.id).catch(() => {});
+    const data = obj.data;
+    const chunkCount = Math.ceil(data.size / IDB_CHUNK_BYTES);
+    const meta = { ...obj, data: undefined, isChunked: true, chunkSize: IDB_CHUNK_BYTES, chunkCount };
+    delete meta.data;
+    await dbPutRaw(meta);
+    for (let index = 0; index < chunkCount; index++) {
+      const start = index * IDB_CHUNK_BYTES;
+      await dbPutChunk(obj.id, index, data.slice(start, Math.min(start + IDB_CHUNK_BYTES, data.size)));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return;
+  }
+  if (obj.data instanceof Blob && obj.isChunked) {
+    await dbDeleteChunks(obj.id).catch(() => {});
+    delete obj.isChunked;
+    delete obj.chunkSize;
+    delete obj.chunkCount;
+  }
+  return dbPutRaw(obj);
 }
 
 function normalizeFolderName(name) {
@@ -1879,7 +1949,7 @@ function hideFileMoveTray() {
 /* ===== ACTION MENU ===== */
 function openActionMenu(id) {
   actionMenuTargetId = id;
-  dbGet(id).then(f => {
+  dbGet(id, false).then(f => {
     if (!f) return;
     const menu = document.getElementById("actionMenu");
     const ext = getFileExt(f.name);
@@ -1931,9 +2001,13 @@ async function moveFileToPrivate(id) {
   if (!f) return;
   if (f.isPrivate) { toast("该文件已是私密文件", "info"); return; }
   try {
-    const buf = await f.data.arrayBuffer();
-    const enc = await encryptBuf(buf, adminKey);
-    f.data = new Blob([enc]);
+    if (f.data.size > PRIVATE_CHUNKED_ENCRYPT_BYTES) {
+      f.data = await encryptBlobChunked(f.data, adminKey);
+    } else {
+      const buf = await f.data.arrayBuffer();
+      const enc = await encryptBuf(buf, adminKey);
+      f.data = new Blob([enc]);
+    }
     f.isPrivate = true;
     await dbPut(f);
     toast(t("moveToPrivateOk"), "success");
@@ -1966,7 +2040,7 @@ async function moveFileToPublic(id) {
 
 /* ===== RENAME ===== */
 function openRenameDialog(id) {
-  dbGet(id).then(f => {
+  dbGet(id, false).then(f => {
     if (!f) return;
     const input = document.getElementById("renameInput");
     input.value = f.name;
@@ -1985,7 +2059,7 @@ async function confirmRename() {
   const id = Number(input.dataset.id);
   const newName = input.value.trim();
   if (!newName) { toast("名称不能为空", "error"); return; }
-  const f = await dbGet(id);
+  const f = await dbGet(id, false);
   if (!f) return;
   f.name = newName;
   await dbPut(f);
@@ -2268,7 +2342,8 @@ async function compressAs(format) {
     const entries = [];
     for (const f of sources) {
       if (!f) continue;
-      let blob = f.data;
+      const full = await ensureFileData(f);
+      let blob = full.data;
       if (f.isPrivate) {
         if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
         const dec = await decryptBuf(await blob.arrayBuffer(), adminKey);
@@ -2407,6 +2482,7 @@ function tarHeader(name, size) {
 /* ===== FILE VIEW ===== */
 async function openFileView(f) {
   try {
+    f = await ensureFileData(f);
     let blob;
     if (f.isPrivate) {
       if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
