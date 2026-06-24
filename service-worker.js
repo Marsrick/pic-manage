@@ -1,4 +1,4 @@
-const CACHE_VERSION = "pic-manage-v10";
+const CACHE_VERSION = "pic-manage-v11";
 const APP_SHELL = [
   "./",
   "./index.html",

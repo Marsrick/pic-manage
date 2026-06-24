@@ -143,6 +143,7 @@ const STORE = "files";
 const CHUNK_STORE = "fileChunks";
 const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
 const IDB_CHUNK_BYTES = 1024 * 1024;
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 
 /* ===== I18N UTILS ===== */
 function t(k) { return T[lang]?.[k] || k; }
@@ -2515,7 +2516,7 @@ async function openFileView(f) {
         return;
       }
       toast("此文件实际为压缩包，需管理员权限解析", "info");
-      // fall through to download-only path below
+      return;
     }
 
     const modal = document.getElementById("previewModal");
@@ -2535,8 +2536,12 @@ async function openFileView(f) {
     } else if (fmt === "pdf" || ext === "pdf") {
       const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
     } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
-      const text = await blob.text();
-      const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
+      if (blob.size > MAX_TEXT_PREVIEW_BYTES) {
+        content.innerHTML = `<div class="empty-placeholder" style="border:none"><p>文件过大，不直接预览，请下载查看</p></div>`;
+      } else {
+        const text = await blob.text();
+        const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
+      }
     } else {
       content.innerHTML = `<div class="empty-placeholder" style="border:none"><p>该格式不支持预览，请直接下载</p></div>`;
     }
