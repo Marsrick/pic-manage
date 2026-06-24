@@ -294,6 +294,7 @@ function closeReader() {
   clearPageFlipRenderUrls();
   document.getElementById("readerOverlay").classList.remove("active");
   document.getElementById("readerCanvas").innerHTML = "";
+  document.getElementById("readerProgressBadge").textContent = "";
   document.getElementById("readerControls").classList.remove("visible");
   closeSidebar();
 }
@@ -317,7 +318,9 @@ function initReaderUI() {
 }
 
 function updateProgress() {
-  document.getElementById("readerPageIndicator").textContent = `${String(rPageIdx+1).padStart(2,"0")}/${readerPages.length}`;
+  const progressText = `${String(rPageIdx+1).padStart(2,"0")}/${readerPages.length}`;
+  document.getElementById("readerPageIndicator").textContent = progressText;
+  document.getElementById("readerProgressBadge").textContent = progressText;
 
   // Keep the page fan in sync (unless the user is actively dragging it)
   if (!pfDragging) { pfPos = rPageIdx; layoutPageFan(); }
