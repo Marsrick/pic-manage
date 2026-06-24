@@ -445,7 +445,7 @@ async function ensureComicCover(f, sourceBlob, force = false) {
     const thumb = await makeCoverThumbnailBlob(first);
     if (!thumb) return null;
     const latest = await dbGet(f.id);
-    if (!latest || latest.isPrivate) return null;
+    if (!latest || (latest.isPrivate && !isAdmin)) return null;
     latest.coverThumb = thumb;
     latest.coverSig = getCoverSignature(latest);
     await dbPut(latest);
@@ -459,13 +459,13 @@ async function ensureComicCover(f, sourceBlob, force = false) {
 }
 
 async function saveComicCoverFromImage(f, imageBlob) {
-  if (!f || f.isPrivate || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
+  if (!f || (f.isPrivate && !isAdmin) || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
   coverGeneratingIds.add(f.id);
   try {
     const thumb = await makeCoverThumbnailBlob(imageBlob);
     if (!thumb) return null;
     const latest = await dbGet(f.id);
-    if (!latest || latest.isPrivate) return null;
+    if (!latest || (latest.isPrivate && !isAdmin)) return null;
     latest.coverThumb = thumb;
     latest.coverSig = getCoverSignature(latest);
     await dbPut(latest);
