@@ -194,6 +194,7 @@ async function dbPutChunk(fileId, index, data) {
   });
 }
 function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const store = tx.objectStore(CHUNK_STORE); const idx = store.index("fileId"); const r = idx.getAll(IDBKeyRange.only(fileId)); r.onsuccess = () => res((r.result || []).sort((a, b) => a.index - b.index)); r.onerror = () => rej(r.error); }); }
+function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
 async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 async function dbBlobFromChunks(fileId, expectedCount) {
   const chunks = await dbGetChunks(fileId);
@@ -479,10 +480,24 @@ function isLikelyText(uint8) {
 
 async function probeBlobFormat(blob) {
   const head = new Uint8Array(await blob.slice(0, 512).arrayBuffer());
+  return probeBytesFormat(head);
+}
+
+function probeBytesFormat(bytes) {
+  const head = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
   const fmt = detectMagicFormat(head);
   return { fmt, isText: fmt === "unknown" && isLikelyText(head) };
 }
 
+async function probeStoredFileFormat(f) {
+  if (f?.data) return probeBlobFormat(f.data);
+  if (!f?.isChunked) return { fmt: "unknown", isText: false };
+  const first = await dbGetChunk(f.id, 0);
+  const raw = first?.data;
+  if (!raw) throw new Error("IndexedDB chunk missing");
+  const buf = raw instanceof Blob ? await raw.slice(0, 512).arrayBuffer() : raw.slice(0, 512);
+  return probeBytesFormat(new Uint8Array(buf));
+}
 function isArchiveFormat(fmt) { return ["zip", "7z", "gzip", "tar", "rar"].includes(fmt); }
 function isImageFormat(fmt) { return ["png", "jpeg", "gif", "webp", "bmp"].includes(fmt); }
 
@@ -988,7 +1003,7 @@ function bindFileRowEvents(area) {
       e.stopPropagation();
       const row = btn.closest(".file-row");
       const id = Number(row.dataset.id);
-      const f = await dbGet(id);
+      const f = await dbGet(id, false);
       if (f) openFileView(f);
     });
   });
@@ -1008,7 +1023,7 @@ function bindFileRowEvents(area) {
         toggleSelection(id);
         return;
       }
-      const f = await dbGet(id);
+      const f = await dbGet(id, false);
       if (f) openFileView(f);
     });
     // Drag source: report file ids so folder targets can accept the drop.
@@ -2492,26 +2507,39 @@ function tarHeader(name, size) {
 /* ===== FILE VIEW ===== */
 async function openFileView(f) {
   try {
-    f = await ensureFileData(f);
-    let blob;
-    if (f.isPrivate) {
-      if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
-      const enc = await f.data.arrayBuffer();
-      const dec = await decryptBuf(enc, adminKey);
-      blob = new Blob([dec], { type: f.type });
-    } else {
-      blob = f.data;
-    }
-
-    const { fmt, isText } = await probeBlobFormat(blob);
     const ext = getFileExt(f.name);
     const extLooksArchive = ["zip", "cbz", "cbr", "tar", "gz", "tgz", "7z", "rar"].includes(ext);
+    let blob = null;
+    let fmt = "unknown";
+    let isText = false;
 
-    // Archive content: extract & render via comic reader.
-    // When extension is misleading (does not declare an archive),
-    // require admin privilege to perform the deep/recursive unwrap.
+    const loadBlob = async () => {
+      if (blob) return blob;
+      const full = await ensureFileData(f);
+      if (full.isPrivate) {
+        if (!adminKey) { toast(t("sessionExpired"), "error"); return null; }
+        const enc = await full.data.arrayBuffer();
+        const dec = await decryptBuf(enc, adminKey);
+        blob = new Blob([dec], { type: full.type });
+      } else {
+        blob = full.data;
+      }
+      return blob;
+    };
+
+    if (f.isPrivate) {
+      blob = await loadBlob();
+      if (!blob) return;
+      ({ fmt, isText } = await probeBlobFormat(blob));
+    } else {
+      ({ fmt, isText } = await probeStoredFileFormat(f));
+      if (f.data) blob = f.data;
+    }
+
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
+        blob = await loadBlob();
+        if (!blob) return;
         openComicReader(blob, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
         return;
       }
@@ -2524,26 +2552,33 @@ async function openFileView(f) {
     document.getElementById("pvTitle").textContent = f.name;
     content.innerHTML = "";
 
-    const downloadBlob = blob;
-    document.getElementById("pvDownloadBtn").onclick = () => {
+    document.getElementById("pvDownloadBtn").onclick = async () => {
+      const downloadBlob = await loadBlob();
+      if (!downloadBlob) return;
       const url = URL.createObjectURL(downloadBlob);
       const a = document.createElement("a"); a.href = url; a.download = f.name; a.click(); URL.revokeObjectURL(url);
     };
 
     if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
+      blob = await loadBlob();
+      if (!blob) return;
       const img = document.createElement("img"); img.src = URL.createObjectURL(blob); content.appendChild(img);
       img.addEventListener("load", () => enableImageZoom(img, content), { once: true });
     } else if (fmt === "pdf" || ext === "pdf") {
+      blob = await loadBlob();
+      if (!blob) return;
       const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
     } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
-      if (blob.size > MAX_TEXT_PREVIEW_BYTES) {
-        content.innerHTML = `<div class="empty-placeholder" style="border:none"><p>文件过大，不直接预览，请下载查看</p></div>`;
+      if ((f.size || 0) > MAX_TEXT_PREVIEW_BYTES) {
+        content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>文件过大，不直接预览，请下载查看</p></div>";
       } else {
+        blob = await loadBlob();
+        if (!blob) return;
         const text = await blob.text();
         const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
       }
     } else {
-      content.innerHTML = `<div class="empty-placeholder" style="border:none"><p>该格式不支持预览，请直接下载</p></div>`;
+      content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>该格式不支持预览，请直接下载</p></div>";
     }
 
     modal.classList.add("active");
