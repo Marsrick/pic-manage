@@ -1001,7 +1001,7 @@ body.file-touch-moving {
   display: none;
   position: fixed;
   inset: 0;
-  background: #fff;
+  background: #000;
   z-index: 600;
   flex-direction: column;
 }
@@ -1014,7 +1014,7 @@ body.file-touch-moving {
   top: 0; left: 0; right: 0;
   height: calc(44px + var(--safe-top));
   padding-top: var(--safe-top);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.56);
   backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
@@ -1022,7 +1022,7 @@ body.file-touch-moving {
   padding-right: 12px;
   gap: 12px;
   z-index: 100;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid rgba(255,255,255,0.12);
   transition: transform 0.3s ease;
 }
 .reader-top.hidden { transform: translateY(-100%); }
@@ -1030,7 +1030,7 @@ body.file-touch-moving {
 .reader-back-btn {
   background: none;
   border: none;
-  color: var(--accent-blue);
+  color: #fff;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1046,13 +1046,13 @@ body.file-touch-moving {
 .reader-page-indicator {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: rgba(255,255,255,0.92);
 }
 
 .reader-file-name {
   flex: 1;
   font-size: 0.8rem;
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.76);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1062,7 +1062,7 @@ body.file-touch-moving {
 .reader-menu-btn {
   background: none;
   border: none;
-  color: var(--text-primary);
+  color: #fff;
   cursor: pointer;
   padding: 6px;
   display: flex;
@@ -1072,7 +1072,7 @@ body.file-touch-moving {
 .reader-menu-btn svg { width: 22px; height: 22px; }
 
 /* Reader Canvas */
-.reader-canvas { flex: 1; position: relative; overflow: hidden; }
+.reader-canvas { flex: 1; position: relative; overflow: hidden; background: #000; }
 
 .reader-progress-badge {
   position: absolute;
@@ -1108,6 +1108,8 @@ body.file-touch-moving {
 }
 
 .r-page-img-box {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
   display: flex;
@@ -1117,10 +1119,14 @@ body.file-touch-moving {
 }
 
 .r-page-img-box img {
+  width: auto;
+  height: auto;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  object-position: center center;
   animation: viewFadeIn 0.2s ease;
+  display: block;
 }
 
 .r-page-img-box.r-swipe-box {
@@ -1129,7 +1135,7 @@ body.file-touch-moving {
   max-width: 100%;
   max-height: 100%;
   overflow: hidden;
-  background: #fff;
+  background: #000;
   touch-action: none;
   contain: layout paint;
 }
@@ -1137,11 +1143,13 @@ body.file-touch-moving {
 .r-swipe-box .r-click-page {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
   object-fit: contain;
+  object-position: center center;
   pointer-events: none;
   user-select: none;
   animation: none;
@@ -1182,7 +1190,15 @@ body.file-touch-moving {
   contain-intrinsic-size: auto 100vw 100vh;
 }
 
-.r-h-page img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.r-h-page img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  display: block;
+}
 
 .r-v-scroll {
   width: 100%;
@@ -1205,7 +1221,7 @@ body.file-touch-moving {
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(255,255,255,0.95);
+  background: rgba(0,0,0,0.62);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   padding: 14px 16px calc(14px + var(--safe-bottom));
@@ -1215,7 +1231,7 @@ body.file-touch-moving {
   z-index: 100;
   transform: translateY(100%);
   transition: transform 0.3s ease;
-  border-top: 1px solid var(--border-default);
+  border-top: 1px solid rgba(255,255,255,0.12);
 }
 
 .reader-controls.visible { transform: translateY(0); }
@@ -1228,7 +1244,7 @@ body.file-touch-moving {
 
 .ctrl-label {
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.72);
   white-space: nowrap;
   min-width: 50px;
 }
@@ -1240,9 +1256,9 @@ body.file-touch-moving {
 }
 
 .ctrl-select {
-  background: var(--bg-input);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.18);
   border-radius: 6px;
   padding: 6px 10px;
   font-family: var(--font-family);
@@ -1251,12 +1267,12 @@ body.file-touch-moving {
   cursor: pointer;
 }
 
-.ctrl-select option { background: #fff; color: var(--text-primary); }
+.ctrl-select option { background: #111827; color: #fff; }
 
 .ctrl-btn {
-  background: var(--bg-input);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #fff;
   border-radius: 20px;
   padding: 7px 14px;
   font-family: var(--font-family);
@@ -1768,7 +1784,7 @@ body.file-touch-moving {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #fff;
+  background: #000;
 }
 .reader-canvas > .pageflip-stage {
   position: absolute;
@@ -1810,7 +1826,7 @@ body.file-touch-moving {
   cursor: pointer;
 }
 .pageflip-page {
-  background: #fff;
+  background: #000;
   overflow: hidden;
 }
 .pageflip-page img {
@@ -1818,7 +1834,8 @@ body.file-touch-moving {
   height: 100%;
   display: block;
   object-fit: contain;
-  background: #fff;
+  object-position: center center;
+  background: #000;
   pointer-events: none;
   user-select: none;
 }

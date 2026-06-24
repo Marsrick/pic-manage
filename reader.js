@@ -655,6 +655,8 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
+  document.getElementById("readerTop")?.classList.add("hidden");
+  document.getElementById("readerControls")?.classList.remove("visible");
 
   canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><svg class="spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg><p>${t("parsingZip")}</p></div>`;
 
@@ -725,6 +727,7 @@ function closeReader() {
   document.getElementById("readerOverlay").classList.remove("active");
   document.getElementById("readerCanvas").innerHTML = "";
   document.getElementById("readerProgressBadge").textContent = "";
+  document.getElementById("readerTop")?.classList.remove("hidden");
   document.getElementById("readerControls").classList.remove("visible");
   closeSidebar();
 }
@@ -887,7 +890,7 @@ function renderPage() {
     const placeholder = document.createElement("img");
     placeholder.className = "pageflip-placeholder";
     setReaderImgSrc(placeholder, rPageIdx);
-    placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff;z-index:1;";
+    placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;";
     stage.appendChild(placeholder);
     container.appendChild(stage);
     setTimeout(() => initPageFlip(stage, placeholder), 30);
