@@ -163,7 +163,7 @@ function openDB() {
   });
 }
 
-function dbAdd(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).add(obj).onsuccess = () => res(); tx.onerror = () => rej(tx.error); }); }
+function dbAdd(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => res(req.result); tx.onerror = () => rej(tx.error); }); }
 function dbAll() { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readonly"); const r = tx.objectStore(STORE).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 function dbDel(id) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(id).onsuccess = () => res(); tx.onerror = () => rej(tx.error); }); }
 
@@ -484,12 +484,7 @@ async function extractFirstZipImageFast(blob) {
 }
 
 async function extractCoverImageBlob(name, blob) {
-  const fast = await extractFirstZipImageFast(blob);
-  if (fast) return fast;
-  if ((blob?.size || 0) <= MAX_AUTO_COVER_BYTES && typeof extractFirstComicImageBlob === "function") {
-    return extractFirstComicImageBlob(name, blob);
-  }
-  return null;
+  return extractFirstZipImageFast(blob);
 }
 
 async function makeComicCoverThumb(name, blob) {
@@ -1622,6 +1617,26 @@ function hideImportProgress() {
   document.getElementById("importProgress")?.classList.remove("active");
 }
 
+function scheduleImportedCover(id, name, sourceBlob) {
+  if (!id || !sourceBlob) return;
+  const run = async () => {
+    try {
+      const thumb = await makeComicCoverThumb(name, sourceBlob);
+      if (!thumb) return;
+      const latest = await dbGet(id);
+      if (!latest) return;
+      latest.coverThumb = thumb;
+      latest.coverSig = getCoverSignature(latest);
+      await dbPut(latest);
+      refreshFileList();
+    } catch (e) {
+      console.warn("[comic-cover] background import cover failed", name, e);
+    }
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
+  else setTimeout(run, 80);
+}
+
 async function saveFileAs(isPrivate) {
   document.getElementById("choiceDialog").classList.remove("active");
   const files = pendingFiles.length ? [...pendingFiles] : (pendingFile ? [pendingFile] : []);
@@ -1643,15 +1658,6 @@ async function saveFileAs(isPrivate) {
           : new Blob([await file.arrayBuffer()], { type: file.type || "application/octet-stream" });
         const uploadedAt = Date.now() + i;
         const record = { name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt, folder };
-        try {
-          const coverThumb = await makeComicCoverThumb(file.name, sourceBlob);
-          if (coverThumb) {
-            record.coverThumb = coverThumb;
-            record.coverSig = getCoverSignature(record);
-          }
-        } catch (coverError) {
-          console.warn("[comic-cover] import cover failed", file.name, coverError);
-        }
 
         if (isPrivate) {
           const buf = await sourceBlob.arrayBuffer();
@@ -1660,7 +1666,8 @@ async function saveFileAs(isPrivate) {
         } else {
           record.data = sourceBlob;
         }
-        await dbAdd(record);
+        const addedId = await dbAdd(record);
+        scheduleImportedCover(addedId, file.name, sourceBlob);
         succeeded++;
       } catch (error) {
         console.error("[batch-upload]", file.name, error);
