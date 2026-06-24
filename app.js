@@ -142,7 +142,7 @@ const DB_VERSION = 2;
 const STORE = "files";
 const CHUNK_STORE = "fileChunks";
 const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
-const IDB_CHUNK_BYTES = 8 * 1024 * 1024;
+const IDB_CHUNK_BYTES = 1024 * 1024;
 
 /* ===== I18N UTILS ===== */
 function t(k) { return T[lang]?.[k] || k; }
@@ -182,7 +182,16 @@ function dbAddRaw(obj) { return new Promise((res, rej) => { const tx = db.transa
 function dbAll() { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readonly"); const r = tx.objectStore(STORE).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 function dbPutRaw(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).put(obj); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("IndexedDB put aborted")); }); }
 function chunkKey(fileId, index) { return String(fileId) + ":" + String(index); }
-function dbPutChunk(fileId, index, data) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).put({ key: chunkKey(fileId, index), fileId, index, data }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk put failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk put aborted")); }); }
+async function dbPutChunk(fileId, index, data) {
+  const payload = data instanceof Blob ? await data.arrayBuffer() : data;
+  return new Promise((res, rej) => {
+    const tx = db.transaction(CHUNK_STORE, "readwrite");
+    tx.objectStore(CHUNK_STORE).put({ key: chunkKey(fileId, index), fileId, index, data: payload });
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk put failed"));
+    tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk put aborted"));
+  });
+}
 function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const store = tx.objectStore(CHUNK_STORE); const idx = store.index("fileId"); const r = idx.getAll(IDBKeyRange.only(fileId)); r.onsuccess = () => res((r.result || []).sort((a, b) => a.index - b.index)); r.onerror = () => rej(r.error); }); }
 async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 async function dbBlobFromChunks(fileId, expectedCount) {
