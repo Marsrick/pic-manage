@@ -461,6 +461,27 @@ html, body {
 }
 
 .file-icon-wrap.zip { background: rgba(167,139,250,0.12); color: var(--accent-purple); }
+.file-icon-wrap.has-cover {
+  background: rgba(15,23,42,0.08);
+  color: transparent;
+  overflow: hidden;
+}
+.file-icon-wrap.has-cover > svg {
+  opacity: 0;
+}
+.file-cover-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 0;
+}
+.file-icon-wrap.has-cover .file-lock-badge {
+  z-index: 2;
+}
+
 .file-icon-wrap.img { background: rgba(16,185,129,0.12); color: var(--accent-green); }
 .file-icon-wrap.pdf { background: rgba(239,68,68,0.12); color: var(--accent-red); }
 .file-icon-wrap.doc { background: rgba(59,130,246,0.12); color: var(--accent-blue); }

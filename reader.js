@@ -11,6 +11,7 @@ let readerImageZoomed = false;
 let pageFlipBook = null;
 let pageFlipInitSeq = 0;
 let pageFlipRenderUrls = [];
+let readerOpenSeq = 0;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -245,13 +246,97 @@ async function extractAllImagesRecursive(name, arrayBuffer) {
   return images;
 }
 
+async function extractFirstImageRecursive(name, arrayBuffer) {
+  const uint8 = new Uint8Array(arrayBuffer);
+  let format = detectMagicType(arrayBuffer);
+  if (!format) {
+    const ext = name.split(".").pop().toLowerCase();
+    if (ext === "zip" || ext === "cbz") format = "zip";
+    else if (ext === "7z") format = "7z";
+    else if (ext === "tar") format = "tar";
+    else if (ext === "gz" || ext === "tgz") format = "gzip";
+  }
+
+  if (format === "zip") {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const entries = [];
+    zip.forEach((relPath, entry) => {
+      if (entry.dir || relPath.startsWith("__MACOSX") || relPath.startsWith(".")) return;
+      entries.push(entry);
+    });
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+    for (const entry of entries) {
+      const entryBuf = await entry.async("arraybuffer");
+      if (isArchiveData(entry.name, entryBuf)) {
+        const sub = await extractFirstImageRecursive(entry.name, entryBuf);
+        if (sub) return sub;
+      } else if (isImageEntry(entry.name, new Uint8Array(entryBuf))) {
+        return { name: entry.name, data: new Blob([entryBuf]) };
+      }
+    }
+  } else if (format === "tar" || format === "gzip") {
+    let uint8Data = uint8;
+    if (format === "gzip") {
+      try {
+        uint8Data = pako.ungzip(uint8);
+      } catch (e) {
+        console.error("pako ungzip failed", e);
+      }
+    }
+
+    const innerType = detectMagicType(exactBuffer(uint8Data));
+    if (innerType === "tar" || name.toLowerCase().endsWith(".tar") || name.toLowerCase().endsWith(".tgz")) {
+      const tarFiles = parseTar(exactBuffer(uint8Data))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+      for (const file of tarFiles) {
+        const eb = exactBuffer(file.data);
+        if (isArchiveData(file.name, eb)) {
+          const sub = await extractFirstImageRecursive(file.name, eb);
+          if (sub) return sub;
+        } else if (isImageEntry(file.name, file.data)) {
+          return { name: file.name, data: new Blob([file.data]) };
+        }
+      }
+    } else {
+      const cleanName = name.replace(/\.gz$/i, "");
+      if (isImageEntry(cleanName, uint8Data)) {
+        return { name: cleanName, data: new Blob([uint8Data]) };
+      }
+    }
+  } else if (format === "7z") {
+    const files = (await extract7z(arrayBuffer))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    for (const file of files) {
+      const eb = exactBuffer(file.data);
+      if (isArchiveData(file.name, eb)) {
+        const sub = await extractFirstImageRecursive(file.name, eb);
+        if (sub) return sub;
+      } else if (isImageEntry(file.name, file.data)) {
+        return { name: file.name, data: new Blob([file.data]) };
+      }
+    }
+  }
+
+  return null;
+}
+
+async function extractFirstComicImageBlob(name, blob) {
+  const first = await extractFirstImageRecursive(name, await blob.arrayBuffer());
+  return first?.data || null;
+}
+
 /* ===== OPEN READER ===== */
 async function openComicReader(zipBlob, name) {
+  const openSeq = ++readerOpenSeq;
   const overlay = document.getElementById("readerOverlay");
   const canvas = document.getElementById("readerCanvas");
   overlay.classList.add("active");
   readerName = name;
   rPageIdx = 0;
+  destroyPageFlip();
+  readerPages.forEach(u => URL.revokeObjectURL(u));
+  readerPages = [];
   initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
@@ -260,7 +345,9 @@ async function openComicReader(zipBlob, name) {
 
   try {
     const arrayBuffer = await zipBlob.arrayBuffer();
+    if (openSeq !== readerOpenSeq) return;
     const images = await extractAllImagesRecursive(name, arrayBuffer);
+    if (openSeq !== readerOpenSeq) return;
 
     // Natural Alphanumeric Sort
     images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
@@ -274,18 +361,26 @@ async function openComicReader(zipBlob, name) {
     for (const img of images) {
       readerPages.push(URL.createObjectURL(img.data));
     }
+    if (openSeq !== readerOpenSeq) {
+      readerPages.forEach(u => URL.revokeObjectURL(u));
+      readerPages = [];
+      return;
+    }
 
     initReaderUI();
     renderPage();
     toast(`${readerPages.length} ${t("parseOk")}`, "success");
   } catch (e) {
     console.error(e);
-    canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
+    if (openSeq === readerOpenSeq) {
+      canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
+    }
   }
 }
 
 /* ===== CLOSE READER ===== */
 function closeReader() {
+  readerOpenSeq++;
   stopAuto();
   destroyPageFlip();
   cancelAnimationFrame(pfRAF);

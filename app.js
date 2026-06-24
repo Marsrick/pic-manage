@@ -127,6 +127,9 @@ let fileMoveTrayIds = [];
 let fileMoveTrayToken = 0;
 let uploadTargetFolder = null;
 let compressFolderName = null;
+let fileCoverUrls = [];
+const coverGeneratingIds = new Set();
+let coverHydrateSeq = 0;
 const pendingExternalUrls = [];
 let appBootDone = false;
 let currentFolder = null; // null = root; otherwise the folder name being viewed
@@ -375,6 +378,117 @@ async function probeBlobFormat(blob) {
 function isArchiveFormat(fmt) { return ["zip", "7z", "gzip", "tar", "rar"].includes(fmt); }
 function isImageFormat(fmt) { return ["png", "jpeg", "gif", "webp", "bmp"].includes(fmt); }
 
+function clearFileCoverUrls() {
+  fileCoverUrls.forEach(url => URL.revokeObjectURL(url));
+  fileCoverUrls = [];
+}
+
+function createFileCoverUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  fileCoverUrls.push(url);
+  return url;
+}
+
+function getCoverSignature(f) {
+  return `${f.size || 0}:${f.uploadedAt || 0}:${f.isPrivate ? 1 : 0}`;
+}
+
+function shouldRenderCover(f) {
+  return !!(f?.coverThumb && f.coverSig === getCoverSignature(f));
+}
+
+function canGenerateComicCover(f) {
+  if (!f || f.isPrivate) return false;
+  const ext = getFileExt(f.name);
+  return ["zip", "cbz", "7z", "tar", "gz", "tgz"].includes(ext);
+}
+
+async function makeCoverThumbnailBlob(imageBlob) {
+  const url = URL.createObjectURL(imageBlob);
+  try {
+    const img = new Image();
+    img.decoding = "async";
+    const loaded = new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+    img.src = url;
+    await loaded;
+
+    const size = 180;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, size, size);
+
+    const scale = Math.max(size / img.naturalWidth, size / img.naturalHeight);
+    const w = img.naturalWidth * scale;
+    const h = img.naturalHeight * scale;
+    ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+
+    return await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function ensureComicCover(f, sourceBlob, force = false) {
+  if ((!force && !canGenerateComicCover(f)) || f?.isPrivate || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
+  if (typeof extractFirstComicImageBlob !== "function") return null;
+  coverGeneratingIds.add(f.id);
+  try {
+    const first = await extractFirstComicImageBlob(f.name, sourceBlob || f.data);
+    if (!first) return null;
+    const thumb = await makeCoverThumbnailBlob(first);
+    if (!thumb) return null;
+    const latest = await dbGet(f.id);
+    if (!latest || latest.isPrivate) return null;
+    latest.coverThumb = thumb;
+    latest.coverSig = getCoverSignature(latest);
+    await dbPut(latest);
+    return latest;
+  } catch (e) {
+    console.warn("[comic-cover] failed", f.name, e);
+    return null;
+  } finally {
+    coverGeneratingIds.delete(f.id);
+  }
+}
+
+function applyCoverToRow(row, f) {
+  if (!row || !shouldRenderCover(f)) return;
+  const wrap = row.querySelector(".file-icon-wrap");
+  if (!wrap || wrap.querySelector(".file-cover-thumb")) return;
+  wrap.classList.add("has-cover");
+  const img = document.createElement("img");
+  img.className = "file-cover-thumb";
+  img.alt = "";
+  img.src = createFileCoverUrl(f.coverThumb);
+  wrap.insertBefore(img, wrap.firstChild);
+}
+
+function hydrateComicCovers(area, files) {
+  const seq = ++coverHydrateSeq;
+  const visible = (files || []).filter(canGenerateComicCover).slice(0, 12);
+  (async () => {
+    for (const f of visible) {
+      if (seq !== coverHydrateSeq) return;
+      if (shouldRenderCover(f)) continue;
+      await new Promise(resolve => {
+        if (typeof requestIdleCallback === "function") requestIdleCallback(resolve, { timeout: 1200 });
+        else setTimeout(resolve, 80);
+      });
+      if (seq !== coverHydrateSeq) return;
+      const updated = await ensureComicCover(f);
+      if (!updated || seq !== coverHydrateSeq) continue;
+      const row = area.querySelector(`.file-row[data-id="${updated.id}"]`);
+      applyCoverToRow(row, updated);
+    }
+  })();
+}
+
 function getIconClass(name) {
   const cat = getFileCat(name);
   if (cat === "comic") return "zip";
@@ -405,6 +519,7 @@ function getIconSVG(name) {
 async function refreshFileList() {
   const area = document.getElementById("fileListArea");
   applyFileView();
+  clearFileCoverUrls();
   try {
     const all = await dbAll();
     const base = isAdmin ? all : all.filter(f => !f.isPrivate);
@@ -425,6 +540,7 @@ async function refreshFileList() {
       area.innerHTML = html || emptyPlaceholderHtml();
       bindFileRowEvents(area);
       bindFolderEvents(area);
+      hydrateComicCovers(area, rootFiles);
       return;
     }
 
@@ -449,6 +565,7 @@ async function refreshFileList() {
     area.innerHTML = html;
     bindFileRowEvents(area);
     bindFolderEvents(area);
+    hydrateComicCovers(area, filtered);
   } catch (e) { console.error(e); }
 }
 
@@ -616,6 +733,7 @@ function renderFileRow(f, showLock) {
   const iconCls = getIconClass(f.name);
   const lockBadge = (showLock && f.isPrivate) ? `<div class="file-lock-badge"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75"/></svg></div>` : "";
   const selected = multiSelectIds.has(f.id) ? " selected" : "";
+  const coverHtml = shouldRenderCover(f) ? `<img class="file-cover-thumb" alt="" src="${createFileCoverUrl(f.coverThumb)}">` : "";
   const checkboxHtml = multiSelectMode
     ? `<div class="file-checkbox${multiSelectIds.has(f.id) ? " checked" : ""}"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg></div>`
     : "";
@@ -623,7 +741,7 @@ function renderFileRow(f, showLock) {
   return `
     <div class="file-row${selected}" data-id="${f.id}" data-name="${f.name}" draggable="false">
       ${checkboxHtml}
-      <div class="file-icon-wrap ${iconCls}">${getIconSVG(f.name)}${lockBadge}</div>
+      <div class="file-icon-wrap ${iconCls}${coverHtml ? " has-cover" : ""}">${coverHtml}${getIconSVG(f.name)}${lockBadge}</div>
       <div class="file-info">
         <div class="file-name">${f.name}</div>
         <div class="file-meta-row">
@@ -2118,6 +2236,7 @@ async function openFileView(f) {
     // require admin privilege to perform the deep/recursive unwrap.
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
+        ensureComicCover(f, blob, true);
         openComicReader(blob, f.name);
         return;
       }
