@@ -404,6 +404,99 @@ function canGenerateComicCover(f) {
   return ["zip", "cbz", "7z", "tar", "gz", "tgz"].includes(ext);
 }
 
+function readUint32LE(view, offset) {
+  return view.getUint32(offset, true);
+}
+
+function readUint16LE(view, offset) {
+  return view.getUint16(offset, true);
+}
+
+function decodeZipName(bytes) {
+  try { return new TextDecoder("utf-8").decode(bytes); }
+  catch (_) { return Array.from(bytes, b => String.fromCharCode(b)).join(""); }
+}
+
+function isCoverImageName(name) {
+  const ext = getFileExt(name);
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext);
+}
+
+async function extractFirstZipImageFast(blob) {
+  if (!blob || blob.size < 22) return null;
+  const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  if (!(head[0] === 0x50 && head[1] === 0x4B)) return null;
+
+  const tailSize = Math.min(blob.size, 1024 * 1024);
+  const tailOffset = blob.size - tailSize;
+  const tail = new Uint8Array(await blob.slice(tailOffset, blob.size).arrayBuffer());
+  const tailView = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  let eocd = -1;
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (readUint32LE(tailView, i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+
+  const cdSize = readUint32LE(tailView, eocd + 12);
+  const cdOffset = readUint32LE(tailView, eocd + 16);
+  if (!cdSize || cdSize > 16 * 1024 * 1024 || cdOffset + cdSize > blob.size) return null;
+
+  const cd = new Uint8Array(await blob.slice(cdOffset, cdOffset + cdSize).arrayBuffer());
+  const view = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
+  const entries = [];
+  let off = 0;
+  while (off + 46 <= cd.length && readUint32LE(view, off) === 0x02014b50) {
+    const method = readUint16LE(view, off + 10);
+    const compSize = readUint32LE(view, off + 20);
+    const uncompSize = readUint32LE(view, off + 24);
+    const nameLen = readUint16LE(view, off + 28);
+    const extraLen = readUint16LE(view, off + 30);
+    const commentLen = readUint16LE(view, off + 32);
+    const localOffset = readUint32LE(view, off + 42);
+    const nameStart = off + 46;
+    const nameEnd = nameStart + nameLen;
+    if (nameEnd > cd.length) break;
+    const name = decodeZipName(cd.slice(nameStart, nameEnd));
+    if (!name.endsWith("/") && !name.startsWith("__MACOSX") && !name.startsWith(".") && isCoverImageName(name)) {
+      entries.push({ name, method, compSize, uncompSize, localOffset });
+    }
+    off = nameEnd + extraLen + commentLen;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+  for (const entry of entries) {
+    if (entry.compSize <= 0 || entry.compSize > 80 * 1024 * 1024) continue;
+    const lh = new Uint8Array(await blob.slice(entry.localOffset, entry.localOffset + 30).arrayBuffer());
+    if (lh.length < 30) continue;
+    const lhView = new DataView(lh.buffer, lh.byteOffset, lh.byteLength);
+    if (readUint32LE(lhView, 0) !== 0x04034b50) continue;
+    const nameLen = readUint16LE(lhView, 26);
+    const extraLen = readUint16LE(lhView, 28);
+    const dataStart = entry.localOffset + 30 + nameLen + extraLen;
+    const compressed = new Uint8Array(await blob.slice(dataStart, dataStart + entry.compSize).arrayBuffer());
+    if (entry.method === 0) return new Blob([compressed]);
+    if (entry.method === 8 && typeof pako !== "undefined") {
+      const inflated = pako.inflateRaw(compressed);
+      return new Blob([inflated]);
+    }
+  }
+  return null;
+}
+
+async function extractCoverImageBlob(name, blob) {
+  const fast = await extractFirstZipImageFast(blob);
+  if (fast) return fast;
+  if ((blob?.size || 0) <= MAX_AUTO_COVER_BYTES && typeof extractFirstComicImageBlob === "function") {
+    return extractFirstComicImageBlob(name, blob);
+  }
+  return null;
+}
+
+async function makeComicCoverThumb(name, blob) {
+  const image = await extractCoverImageBlob(name, blob);
+  return image ? makeCoverThumbnailBlob(image) : null;
+}
+
 async function makeCoverThumbnailBlob(imageBlob) {
   const url = URL.createObjectURL(imageBlob);
   try {
@@ -440,9 +533,7 @@ async function ensureComicCover(f, sourceBlob, force = false) {
   if (typeof extractFirstComicImageBlob !== "function") return null;
   coverGeneratingIds.add(f.id);
   try {
-    const first = await extractFirstComicImageBlob(f.name, sourceBlob || f.data);
-    if (!first) return null;
-    const thumb = await makeCoverThumbnailBlob(first);
+    const thumb = await makeComicCoverThumb(f.name, sourceBlob || f.data);
     if (!thumb) return null;
     const latest = await dbGet(f.id);
     if (!latest || (latest.isPrivate && !isAdmin)) return null;
@@ -494,7 +585,7 @@ function applyCoverToRow(row, f) {
 
 function hydrateComicCovers(area, files) {
   const seq = ++coverHydrateSeq;
-  const visible = (files || []).filter(canGenerateComicCover).slice(0, 12);
+  const visible = (files || []).filter(f => f && !f.isPrivate && !shouldRenderCover(f)).slice(0, 12);
   (async () => {
     for (const f of visible) {
       if (seq !== coverHydrateSeq) return;
@@ -1547,17 +1638,29 @@ async function saveFileAs(isPrivate) {
       const file = files[i];
       updateImportProgress(i, files.length, file.name);
       try {
-        let data;
-        if (isPrivate) {
-          const buf = await file.arrayBuffer();
-          const enc = await encryptBuf(buf, adminKey);
-          data = new Blob([enc]);
-        } else {
-          data = file instanceof Blob
-            ? file
-            : new Blob([await file.arrayBuffer()], { type: file.type || "application/octet-stream" });
+        const sourceBlob = file instanceof Blob
+          ? file
+          : new Blob([await file.arrayBuffer()], { type: file.type || "application/octet-stream" });
+        const uploadedAt = Date.now() + i;
+        const record = { name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt, folder };
+        try {
+          const coverThumb = await makeComicCoverThumb(file.name, sourceBlob);
+          if (coverThumb) {
+            record.coverThumb = coverThumb;
+            record.coverSig = getCoverSignature(record);
+          }
+        } catch (coverError) {
+          console.warn("[comic-cover] import cover failed", file.name, coverError);
         }
-        await dbAdd({ name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt: Date.now() + i, data, folder });
+
+        if (isPrivate) {
+          const buf = await sourceBlob.arrayBuffer();
+          const enc = await encryptBuf(buf, adminKey);
+          record.data = new Blob([enc]);
+        } else {
+          record.data = sourceBlob;
+        }
+        await dbAdd(record);
         succeeded++;
       } catch (error) {
         console.error("[batch-upload]", file.name, error);

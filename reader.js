@@ -12,6 +12,7 @@ let pageFlipBook = null;
 let pageFlipInitSeq = 0;
 let pageFlipRenderUrls = [];
 let readerOpenSeq = 0;
+let readerExtractWorker = null;
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -326,6 +327,72 @@ async function extractFirstComicImageBlob(name, blob) {
   return first?.data || null;
 }
 
+function stopReaderExtractWorker() {
+  if (readerExtractWorker) {
+    try { readerExtractWorker.terminate(); } catch (_) {}
+    readerExtractWorker = null;
+  }
+}
+
+async function isZipBlob(blob) {
+  const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  return head[0] === 0x50 && head[1] === 0x4B;
+}
+
+function extractZipImagesInWorker(blob, name) {
+  stopReaderExtractWorker();
+  const jszipUrl = new URL("lib/jszip.min.js", location.href).href;
+  const workerCode = `
+    self.onmessage = async (event) => {
+      const { blob, jszipUrl } = event.data;
+      try {
+        importScripts(jszipUrl);
+        const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+        const entries = [];
+        zip.forEach((relPath, entry) => {
+          if (entry.dir || relPath.startsWith("__MACOSX") || relPath.startsWith(".")) return;
+          entries.push(entry);
+        });
+        entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+        const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+        const images = [];
+        for (const entry of entries) {
+          const ext = (entry.name.split(".").pop() || "").toLowerCase();
+          if (!imageExts.has(ext)) continue;
+          const data = await entry.async("blob");
+          images.push({ name: entry.name, data });
+        }
+        self.postMessage({ ok: true, images });
+      } catch (error) {
+        self.postMessage({ ok: false, error: error?.message || String(error) });
+      }
+    };
+  `;
+  const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: "application/javascript" }));
+  const worker = new Worker(workerUrl);
+  URL.revokeObjectURL(workerUrl);
+  readerExtractWorker = worker;
+  return new Promise((resolve, reject) => {
+    worker.onmessage = (event) => {
+      if (readerExtractWorker === worker) readerExtractWorker = null;
+      worker.terminate();
+      if (event.data?.ok) resolve(event.data.images || []);
+      else reject(new Error(event.data?.error || "ZIP parse failed"));
+    };
+    worker.onerror = (event) => {
+      if (readerExtractWorker === worker) readerExtractWorker = null;
+      worker.terminate();
+      reject(new Error(event.message || "ZIP worker failed"));
+    };
+    worker.postMessage({ blob, name, jszipUrl });
+  });
+}
+
+async function extractImagesForReader(name, blob) {
+  if (await isZipBlob(blob)) return extractZipImagesInWorker(blob, name);
+  return extractAllImagesRecursive(name, await blob.arrayBuffer());
+}
+
 /* ===== OPEN READER ===== */
 async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   const openSeq = ++readerOpenSeq;
@@ -334,6 +401,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   overlay.classList.add("active");
   readerName = name;
   rPageIdx = 0;
+  stopReaderExtractWorker();
   destroyPageFlip();
   readerPages.forEach(u => URL.revokeObjectURL(u));
   readerPages = [];
@@ -344,9 +412,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><svg class="spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg><p>${t("parsingZip")}</p></div>`;
 
   try {
-    const arrayBuffer = await zipBlob.arrayBuffer();
-    if (openSeq !== readerOpenSeq) return;
-    const images = await extractAllImagesRecursive(name, arrayBuffer);
+    const images = await extractImagesForReader(name, zipBlob);
     if (openSeq !== readerOpenSeq) return;
 
     // Natural Alphanumeric Sort
