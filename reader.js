@@ -495,7 +495,7 @@ function shouldUseLazyZipReader(name, blob) {
     && (blob.size >= READER_LAZY_ZIP_BYTES || /iphone|ipad|ipod|android/i.test(navigator.userAgent || ""));
 }
 
-function createLazyZipReader(blob, name) {
+function createLazyZipReader(blob, name, initArrayBuffer = null) {
   stopReaderLazyWorker();
   const jszipUrl = new URL("lib/jszip.min.js", location.href).href;
   const workerCode = `
@@ -512,7 +512,7 @@ function createLazyZipReader(blob, name) {
       try {
         if (data.type === "init") {
           importScripts(data.jszipUrl);
-          const arrayBuffer = await data.blob.arrayBuffer();
+          const arrayBuffer = data.arrayBuffer || await data.blob.arrayBuffer();
           zip = await JSZip.loadAsync(arrayBuffer);
           entries = [];
           zip.forEach((relPath, entry) => {
@@ -566,7 +566,9 @@ function createLazyZipReader(blob, name) {
     worker.addEventListener("message", onInitMessage);
     worker.addEventListener("error", onInitError);
     worker.addEventListener("message", handleLazyReaderMessage);
-    worker.postMessage({ type: "init", blob, name, jszipUrl });
+    const payload = { type: "init", blob: initArrayBuffer ? null : blob, arrayBuffer: initArrayBuffer, name, jszipUrl };
+    if (initArrayBuffer) worker.postMessage(payload, [initArrayBuffer]);
+    else worker.postMessage(payload);
   });
 }
 
@@ -606,7 +608,15 @@ function requestReaderPageBlob(idx) {
 
 async function extractImagesForReader(name, blob) {
   if (shouldUseLazyZipReader(name, blob)) {
-    return await createLazyZipReader(blob, name);
+    try {
+      return await createLazyZipReader(blob, name);
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      if (!/I\/O|read|operation/i.test(msg)) throw e;
+      console.warn("[reader] lazy Blob read failed, retrying with ArrayBuffer:", e);
+      const buf = await blob.arrayBuffer();
+      return await createLazyZipReader(new Blob([buf]), name, buf);
+    }
   }
   try {
     return { lazy: false, images: await extractImagesInWorker(blob, name), size: blob.size };

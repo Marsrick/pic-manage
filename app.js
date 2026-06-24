@@ -197,9 +197,18 @@ function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
 async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 async function dbBlobFromChunks(fileId, expectedCount) {
-  const chunks = await dbGetChunks(fileId);
-  if (expectedCount && chunks.length !== expectedCount) throw new Error("IndexedDB chunk missing");
-  return new Blob(chunks.map(c => c.data));
+  if (!expectedCount) {
+    const chunks = await dbGetChunks(fileId);
+    return new Blob(chunks.map(c => c.data));
+  }
+  const parts = [];
+  for (let index = 0; index < expectedCount; index++) {
+    const chunk = await dbGetChunk(fileId, index);
+    if (!chunk?.data) throw new Error("IndexedDB chunk missing");
+    parts.push(chunk.data);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return new Blob(parts);
 }
 async function ensureFileData(f) { if (!f || f.data || !f.isChunked) return f; return { ...f, data: await dbBlobFromChunks(f.id, f.chunkCount) }; }
 async function dbAddChunked(obj) {
@@ -279,6 +288,36 @@ async function decryptChunkedBuf(v, gesture) {
     parts.push(new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct)));
   }
   return new Blob(parts).arrayBuffer();
+}
+
+async function decryptBlob(blob, gesture, type = "") {
+  const source = blob instanceof Blob ? blob : new Blob([blob]);
+  const head = new Uint8Array(await source.slice(0, CHUNKED_ENC_MAGIC.length).arrayBuffer());
+  if (!isChunkedEncryptedData(head)) {
+    const dec = await decryptBuf(await source.arrayBuffer(), gesture);
+    return new Blob([dec], { type });
+  }
+
+  const header = new Uint8Array(await source.slice(0, 28).arrayBuffer());
+  if (header.length < 28 || !isChunkedEncryptedData(header)) throw new Error("Invalid encrypted data");
+  const salt = header.slice(8, 24);
+  const key = await deriveKey(gesture, salt);
+  let offset = 28;
+  const parts = [];
+
+  while (offset + 16 <= source.size) {
+    const meta = new Uint8Array(await source.slice(offset, offset + 16).arrayBuffer());
+    const iv = meta.slice(0, 12);
+    const len = readUint32FromBytes(meta, 12);
+    offset += 16;
+    if (len <= 0 || offset + len > source.size) throw new Error("Invalid encrypted chunk");
+    const ct = await source.slice(offset, offset + len).arrayBuffer();
+    offset += len;
+    parts.push(new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct)));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  return new Blob(parts, { type });
 }
 
 async function encryptBuf(buf, gesture) {
@@ -2546,9 +2585,7 @@ async function openFileView(f) {
       const full = await ensureFileData(f);
       if (full.isPrivate) {
         if (!adminKey) { toast(t("sessionExpired"), "error"); return null; }
-        const enc = await full.data.arrayBuffer();
-        const dec = await decryptBuf(enc, adminKey);
-        blob = new Blob([dec], { type: full.type });
+        blob = await decryptBlob(full.data, adminKey, full.type);
       } else {
         blob = full.data;
       }
