@@ -15,16 +15,45 @@ let pageFlipInitSeq = 0;
 let pageFlipRenderUrls = [];
 let readerOpenSeq = 0;
 let readerExtractWorker = null;
+let readerLazyWorker = null;
+let readerLazyPending = new Map();
+let readerLazyPageNames = [];
+let readerLazyMode = false;
+let readerLargeModeLocked = false;
+const READER_LAZY_ZIP_BYTES = 48 * 1024 * 1024;
+const READER_HEAVY_MODE_PAGE_LIMIT = 180;
+const READER_HEAVY_MODE_BYTES = 96 * 1024 * 1024;
+const READER_PLACEHOLDER_SRC = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 460"><rect width="320" height="460" fill="#f8fafc"/><g fill="none" stroke="#cbd5e1" stroke-width="10" stroke-linecap="round"><path d="M95 210h130"/><path d="M115 245h90"/></g><text x="160" y="285" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#94a3b8">Loading</text></svg>`
+);
 
 /* ===== LAZY OBJECT URL MANAGEMENT ===== */
 function ensureReaderPageUrl(idx) {
   if (idx < 0 || idx >= readerPages.length) return null;
   if (!readerPages[idx]) {
     const blob = readerImageBlobs[idx];
-    if (!blob) return null;
+    if (!blob) {
+      requestReaderPageBlob(idx).catch(e => console.warn("[reader] lazy page request failed", idx, e));
+      return null;
+    }
     readerPages[idx] = URL.createObjectURL(blob);
   }
   return readerPages[idx];
+}
+
+function setReaderImgSrc(img, idx) {
+  if (!img) return;
+  img.dataset.readerIdx = String(idx);
+  const url = ensureReaderPageUrl(idx);
+  img.src = url || READER_PLACEHOLDER_SRC;
+}
+
+function refreshReaderImages(idx) {
+  const url = ensureReaderPageUrl(idx);
+  if (!url) return;
+  document.querySelectorAll(`img[data-reader-idx="${idx}"]`).forEach(img => {
+    if (img.src !== url) img.src = url;
+  });
 }
 
 function revokeDistantReaderUrls(centerIdx) {
@@ -40,6 +69,17 @@ function revokeAllReaderUrls() {
   for (let i = 0; i < readerPages.length; i++) {
     if (readerPages[i]) { URL.revokeObjectURL(readerPages[i]); readerPages[i] = null; }
   }
+}
+
+function stopReaderLazyWorker() {
+  if (readerLazyWorker) {
+    try { readerLazyWorker.terminate(); } catch (_) {}
+  }
+  readerLazyPending.forEach(({ reject }) => reject(new Error("Reader closed")));
+  readerLazyPending.clear();
+  readerLazyWorker = null;
+  readerLazyMode = false;
+  readerLazyPageNames = [];
 }
 
 /* ===== DECOMPRESSION UTILS ===== */
@@ -444,12 +484,135 @@ function extractImagesInWorker(blob, name) {
   });
 }
 
+function isZipLikeReaderFile(name, blob) {
+  const ext = (name || "").split(".").pop().toLowerCase();
+  return ["zip", "cbz"].includes(ext) || blob?.type === "application/zip";
+}
+
+function shouldUseLazyZipReader(name, blob) {
+  return isZipLikeReaderFile(name, blob)
+    && blob
+    && (blob.size >= READER_LAZY_ZIP_BYTES || /iphone|ipad|ipod|android/i.test(navigator.userAgent || ""));
+}
+
+function createLazyZipReader(blob, name) {
+  stopReaderLazyWorker();
+  const jszipUrl = new URL("lib/jszip.min.js", location.href).href;
+  const workerCode = `
+    let zip = null;
+    let entries = [];
+    function isImageEntryName(name) {
+      return /\\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name || "");
+    }
+    function isNoisePath(name) {
+      return !name || name.startsWith("__MACOSX") || name.startsWith(".") || /(^|\\/)\\./.test(name);
+    }
+    self.onmessage = async (event) => {
+      const data = event.data || {};
+      try {
+        if (data.type === "init") {
+          importScripts(data.jszipUrl);
+          const arrayBuffer = await data.blob.arrayBuffer();
+          zip = await JSZip.loadAsync(arrayBuffer);
+          entries = [];
+          zip.forEach((relPath, entry) => {
+            if (entry.dir || isNoisePath(relPath) || !isImageEntryName(relPath)) return;
+            entries.push(entry);
+          });
+          entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+          self.postMessage({ type: "ready", names: entries.map(e => e.name), total: entries.length });
+          return;
+        }
+        if (data.type === "page") {
+          const idx = data.idx;
+          const entry = entries[idx];
+          if (!entry) throw new Error("Page not found");
+          const arrayBuffer = await entry.async("arraybuffer");
+          self.postMessage({ type: "page", idx, blob: new Blob([arrayBuffer]) });
+        }
+      } catch (error) {
+        self.postMessage({ type: "error", idx: data.idx, error: error?.message || String(error) });
+      }
+    };
+  `;
+  const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: "application/javascript" }));
+  const worker = new Worker(workerUrl);
+  URL.revokeObjectURL(workerUrl);
+  readerLazyWorker = worker;
+
+  return new Promise((resolve, reject) => {
+    const cleanupInit = () => {
+      worker.removeEventListener("message", onInitMessage);
+      worker.removeEventListener("error", onInitError);
+    };
+    const onInitError = (event) => {
+      cleanupInit();
+      stopReaderLazyWorker();
+      reject(new Error(event.message || "Lazy reader failed"));
+    };
+    const onInitMessage = (event) => {
+      const data = event.data || {};
+      if (data.type === "ready") {
+        cleanupInit();
+        readerLazyPageNames = data.names || [];
+        readerLazyMode = true;
+        resolve({ lazy: true, names: readerLazyPageNames, total: data.total || 0, size: blob.size, name });
+      } else if (data.type === "error") {
+        cleanupInit();
+        stopReaderLazyWorker();
+        reject(new Error(data.error || "Lazy reader failed"));
+      }
+    };
+    worker.addEventListener("message", onInitMessage);
+    worker.addEventListener("error", onInitError);
+    worker.addEventListener("message", handleLazyReaderMessage);
+    worker.postMessage({ type: "init", blob, name, jszipUrl });
+  });
+}
+
+function handleLazyReaderMessage(event) {
+  const data = event.data || {};
+  if (data.type === "page") {
+    const pending = readerLazyPending.get(data.idx);
+    readerLazyPending.delete(data.idx);
+    if (readerPages[data.idx]) {
+      URL.revokeObjectURL(readerPages[data.idx]);
+      readerPages[data.idx] = null;
+    }
+    readerImageBlobs[data.idx] = data.blob;
+    refreshReaderImages(data.idx);
+    pending?.resolve(data.blob);
+  } else if (data.type === "error") {
+    const pending = readerLazyPending.get(data.idx);
+    if (pending) {
+      readerLazyPending.delete(data.idx);
+      pending.reject(new Error(data.error || "Page load failed"));
+    }
+  }
+}
+
+function requestReaderPageBlob(idx) {
+  if (!readerLazyMode || !readerLazyWorker || idx < 0 || idx >= readerImageBlobs.length) {
+    return Promise.resolve(readerImageBlobs[idx] || null);
+  }
+  if (readerImageBlobs[idx]) return Promise.resolve(readerImageBlobs[idx]);
+  if (readerLazyPending.has(idx)) return readerLazyPending.get(idx).promise;
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  readerLazyPending.set(idx, { promise, resolve, reject });
+  readerLazyWorker.postMessage({ type: "page", idx });
+  return promise;
+}
+
 async function extractImagesForReader(name, blob) {
+  if (shouldUseLazyZipReader(name, blob)) {
+    return await createLazyZipReader(blob, name);
+  }
   try {
-    return await extractImagesInWorker(blob, name);
+    return { lazy: false, images: await extractImagesInWorker(blob, name), size: blob.size };
   } catch (e) {
     console.warn("[reader] worker extraction failed, falling back to main thread:", e);
-    return extractAllImagesRecursive(name, await blob.arrayBuffer());
+    return { lazy: false, images: await extractAllImagesRecursive(name, await blob.arrayBuffer()), size: blob.size };
   }
 }
 
@@ -462,10 +625,12 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   readerName = name;
   rPageIdx = 0;
   stopReaderExtractWorker();
+  stopReaderLazyWorker();
   destroyPageFlip();
   revokeAllReaderUrls();
   readerPages = [];
   readerImageBlobs = [];
+  readerLargeModeLocked = false;
   initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
@@ -473,23 +638,40 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><svg class="spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg><p>${t("parsingZip")}</p></div>`;
 
   try {
-    const images = await extractImagesForReader(name, zipBlob);
+    const result = await extractImagesForReader(name, zipBlob);
     if (openSeq !== readerOpenSeq) return;
 
-    // Natural Alphanumeric Sort
-    images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-
-    if (images.length === 0) {
+    const total = result.lazy ? result.total : result.images.length;
+    if (total === 0) {
       canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
       return;
     }
 
-    if (typeof onFirstImageLoaded === "function") {
-      Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
-    }
+    if (result.lazy) {
+      readerImageBlobs = new Array(total).fill(null);
+      readerPages = new Array(total).fill(null);
+      readerLargeModeLocked = true;
+      if (readerLargeModeLocked && rMode !== "click") rMode = "click";
 
-    readerImageBlobs = images.map(img => img.data);
-    readerPages = new Array(images.length).fill(null);
+      const firstBlob = await requestReaderPageBlob(0).catch(() => null);
+      if (openSeq !== readerOpenSeq) return;
+      if (typeof onFirstImageLoaded === "function" && firstBlob) {
+        Promise.resolve(onFirstImageLoaded(firstBlob)).catch(e => console.warn("[comic-cover] first page callback failed", e));
+      }
+    } else {
+      const images = result.images;
+      // Natural Alphanumeric Sort
+      images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+      if (typeof onFirstImageLoaded === "function") {
+        Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
+      }
+
+      readerImageBlobs = images.map(img => img.data);
+      readerPages = new Array(images.length).fill(null);
+      readerLargeModeLocked = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES;
+      if (readerLargeModeLocked && rMode !== "click") rMode = "click";
+    }
     if (openSeq !== readerOpenSeq) {
       revokeAllReaderUrls();
       readerPages = [];
@@ -499,7 +681,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
     initReaderUI();
     renderPage();
-    toast(`${readerPages.length} ${t("parseOk")}`, "success");
+    toast(`${readerPages.length} ${t("parseOk")}${result.lazy ? " · 按需加载" : ""}`, "success");
   } catch (e) {
     console.error(e);
     if (openSeq === readerOpenSeq) {
@@ -512,6 +694,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 function closeReader() {
   readerOpenSeq++;
   stopAuto();
+  stopReaderLazyWorker();
   destroyPageFlip();
   cancelAnimationFrame(pfRAF);
   revokeAllReaderUrls();
@@ -531,10 +714,23 @@ function initReaderUI() {
   const speedSlider = document.getElementById("rSpeedSlider");
 
   modeSel.value = rMode;
+  Array.from(modeSel.options).forEach(opt => {
+    opt.disabled = readerLargeModeLocked && opt.value !== "click";
+  });
   speedSlider.value = rAutoSpeed;
   document.getElementById("rSpeedVal").textContent = rAutoSpeed;
 
-  modeSel.onchange = () => { rMode = modeSel.value; stopAuto(); renderPage(); };
+  modeSel.onchange = () => {
+    if (readerLargeModeLocked && modeSel.value !== "click") {
+      modeSel.value = "click";
+      rMode = "click";
+      toast("大文件已启用省内存阅读模式", "info");
+      return;
+    }
+    rMode = modeSel.value;
+    stopAuto();
+    renderPage();
+  };
   speedSlider.oninput = () => { rAutoSpeed = parseInt(speedSlider.value); document.getElementById("rSpeedVal").textContent = rAutoSpeed; if (rAutoPlaying) { stopAuto(); startAuto(); } };
 
   // Build the page-fan progress selector
@@ -613,7 +809,7 @@ function renderPage() {
     const box = document.createElement("div"); box.className = "r-page-img-box r-swipe-box";
     const img = document.createElement("img");
     img.className = "r-click-page current";
-    img.src = ensureReaderPageUrl(rPageIdx);
+    setReaderImgSrc(img, rPageIdx);
     img.alt = `Page ${rPageIdx+1}`;
 
     const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
@@ -633,7 +829,7 @@ function renderPage() {
     readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-h-page";
       const img = document.createElement("img"); img.loading = "lazy";
-      img.src = ensureReaderPageUrl(i);
+      setReaderImgSrc(img, i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -647,7 +843,7 @@ function renderPage() {
     readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-v-page"; pg.id = `vp-${i}`;
       const img = document.createElement("img"); img.loading = "lazy";
-      img.src = ensureReaderPageUrl(i);
+      setReaderImgSrc(img, i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -669,7 +865,7 @@ function renderPage() {
     // Show current page as a placeholder while the library loads
     const placeholder = document.createElement("img");
     placeholder.className = "pageflip-placeholder";
-    placeholder.src = ensureReaderPageUrl(rPageIdx);
+    setReaderImgSrc(placeholder, rPageIdx);
     placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff;z-index:1;";
     stage.appendChild(placeholder);
     container.appendChild(stage);
@@ -1271,7 +1467,7 @@ function prepareClickSlide(dir) {
   box.querySelectorAll(".r-click-page.incoming").forEach(el => el.remove());
   const incoming = document.createElement("img");
   incoming.className = "r-click-page incoming";
-  incoming.src = ensureReaderPageUrl(next);
+  setReaderImgSrc(incoming, next);
   incoming.alt = `Page ${next + 1}`;
   incoming.style.transition = "none";
   box.appendChild(incoming);
@@ -1294,7 +1490,7 @@ function finishClickSlide(state, commit) {
   if (commit) {
     rPageIdx = state.next;
     updateProgress();
-    state.current.src = ensureReaderPageUrl(rPageIdx);
+    setReaderImgSrc(state.current, rPageIdx);
   }
   state.current.style.transition = "none";
   state.current.style.transform = "translate3d(0,0,0)";
@@ -1436,7 +1632,7 @@ function flipPage(dir, corner = "top") {
     if (animateClickSlide(dir, 0, true)) return;
     rPageIdx = next; updateProgress();
     const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
-    if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; img.src = ensureReaderPageUrl(rPageIdx); }
+    if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; setReaderImgSrc(img, rPageIdx); }
   } else if (rMode === "slide") {
     rPageIdx = next; updateProgress();
     const wrap = document.getElementById("hScroll");
@@ -1451,7 +1647,7 @@ function jumpPage(idx) {
   if (rMode === "click") {
     cancelClickSlide(true);
     const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
-    if (img) img.src = ensureReaderPageUrl(rPageIdx);
+    if (img) setReaderImgSrc(img, rPageIdx);
   } else if (rMode === "flip") {
     if (pageFlipBook) pageFlipBook.turnToPage(rPageIdx);
   } else if (rMode === "slide") {
@@ -1484,7 +1680,7 @@ function openSidebar() {
       item.className = "grid-thumb" + (i === rPageIdx ? " active" : "");
       const img = document.createElement("img");
       img.loading = "lazy";
-      img.src = ensureReaderPageUrl(i);
+      setReaderImgSrc(img, i);
       const num = document.createElement("span");
       num.className = "grid-num";
       num.textContent = i + 1;
@@ -1576,7 +1772,7 @@ function layoutPageFan() {
       s = free.pop();
       if (!s) return;
       s._idx = idx;
-      s.querySelector("img").src = ensureReaderPageUrl(idx);
+      setReaderImgSrc(s.querySelector("img"), idx);
       s.querySelector(".pf-num").textContent = idx + 1;
     }
     const rel = idx - pfPos;
@@ -1609,7 +1805,7 @@ function syncReaderLive(idx) {
     `${String(idx + 1).padStart(2, "0")}/${readerPages.length}`;
   if (rMode === "click") {
     const img = document.querySelector(".r-page-img-box img");
-    if (img) { if (img._resetZoom) img._resetZoom(); img.src = ensureReaderPageUrl(idx); }
+    if (img) { if (img._resetZoom) img._resetZoom(); setReaderImgSrc(img, idx); }
   }
 }
 
