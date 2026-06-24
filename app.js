@@ -131,6 +131,8 @@ let fileCoverUrls = [];
 const coverGeneratingIds = new Set();
 let coverHydrateSeq = 0;
 const MAX_AUTO_COVER_BYTES = 80 * 1024 * 1024;
+const PRIVATE_CHUNKED_ENCRYPT_BYTES = 64 * 1024 * 1024;
+const PRIVATE_ENCRYPT_CHUNK_BYTES = 8 * 1024 * 1024;
 const pendingExternalUrls = [];
 let appBootDone = false;
 let currentFolder = null; // null = root; otherwise the folder name being viewed
@@ -163,7 +165,7 @@ function openDB() {
   });
 }
 
-function dbAdd(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => res(req.result); tx.onerror = () => rej(tx.error); }); }
+function dbAdd(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); let id = null; const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => { id = req.result; }; tx.oncomplete = () => res(id); tx.onerror = () => rej(tx.error || new Error("IndexedDB add failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB add aborted")); }); }
 function dbAll() { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readonly"); const r = tx.objectStore(STORE).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 function dbDel(id) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(id).onsuccess = () => res(); tx.onerror = () => rej(tx.error); }); }
 
@@ -172,6 +174,56 @@ async function deriveKey(gesture, salt) {
   const raw = new TextEncoder().encode(gesture);
   const base = await crypto.subtle.importKey("raw", raw, "PBKDF2", false, ["deriveKey"]);
   return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+const CHUNKED_ENC_MAGIC = new Uint8Array([0x50, 0x4d, 0x45, 0x4e, 0x43, 0x32, 0x01, 0x00]);
+
+function isChunkedEncryptedData(v) {
+  if (!v || v.length < CHUNKED_ENC_MAGIC.length) return false;
+  for (let i = 0; i < CHUNKED_ENC_MAGIC.length; i++) if (v[i] !== CHUNKED_ENC_MAGIC[i]) return false;
+  return true;
+}
+
+function uint32BytesLE(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value >>> 0, true);
+  return out;
+}
+
+function readUint32FromBytes(v, offset) {
+  return new DataView(v.buffer, v.byteOffset + offset, 4).getUint32(0, true);
+}
+
+async function encryptBlobChunked(blob, gesture) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(gesture, salt);
+  const parts = [CHUNKED_ENC_MAGIC, salt, uint32BytesLE(PRIVATE_ENCRYPT_CHUNK_BYTES)];
+  for (let offset = 0; offset < blob.size; offset += PRIVATE_ENCRYPT_CHUNK_BYTES) {
+    const chunk = await blob.slice(offset, offset + PRIVATE_ENCRYPT_CHUNK_BYTES).arrayBuffer();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, chunk);
+    parts.push(iv, uint32BytesLE(ct.byteLength), new Uint8Array(ct));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return new Blob(parts);
+}
+
+async function decryptChunkedBuf(v, gesture) {
+  const salt = v.slice(8, 24);
+  const key = await deriveKey(gesture, salt);
+  let offset = 28;
+  const parts = [];
+  while (offset + 16 <= v.length) {
+    const iv = v.slice(offset, offset + 12);
+    offset += 12;
+    const len = readUint32FromBytes(v, offset);
+    offset += 4;
+    if (len <= 0 || offset + len > v.length) throw new Error("Invalid encrypted chunk");
+    const ct = v.slice(offset, offset + len);
+    offset += len;
+    parts.push(new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct)));
+  }
+  return new Blob(parts).arrayBuffer();
 }
 
 async function encryptBuf(buf, gesture) {
@@ -186,6 +238,7 @@ async function encryptBuf(buf, gesture) {
 
 async function decryptBuf(buf, gesture) {
   const v = new Uint8Array(buf);
+  if (isChunkedEncryptedData(v)) return decryptChunkedBuf(v, gesture);
   const salt = v.slice(0, 16), iv = v.slice(16, 28), ct = v.slice(28);
   const key = await deriveKey(gesture, salt);
   return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
@@ -1660,9 +1713,13 @@ async function saveFileAs(isPrivate) {
         const record = { name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt, folder };
 
         if (isPrivate) {
-          const buf = await sourceBlob.arrayBuffer();
-          const enc = await encryptBuf(buf, adminKey);
-          record.data = new Blob([enc]);
+          if (sourceBlob.size > PRIVATE_CHUNKED_ENCRYPT_BYTES) {
+            record.data = await encryptBlobChunked(sourceBlob, adminKey);
+          } else {
+            const buf = await sourceBlob.arrayBuffer();
+            const enc = await encryptBuf(buf, adminKey);
+            record.data = new Blob([enc]);
+          }
         } else {
           record.data = sourceBlob;
         }
@@ -1671,12 +1728,12 @@ async function saveFileAs(isPrivate) {
         succeeded++;
       } catch (error) {
         console.error("[batch-upload]", file.name, error);
-        failed.push(file.name);
+        failed.push(`${file.name}: ${error?.name || "Error"} ${error?.message || error}`);
       }
     }
 
     updateImportProgress(files.length, files.length, succeeded === files.length ? "导入完成" : "部分文件导入失败");
-    if (failed.length) toast(`成功导入 ${succeeded} 个，失败 ${failed.length} 个`, succeeded ? "info" : "error");
+    if (failed.length) toast(`Import ok ${succeeded}, failed ${failed.length}: ${failed[0]}`, succeeded ? "info" : "error");
     else toast(files.length > 1 ? `已成功导入 ${succeeded} 个文件` : t("uploadOk"), "success");
     refreshFileList();
     return failed.length === 0;
