@@ -327,7 +327,7 @@ async function extractFirstComicImageBlob(name, blob) {
 }
 
 /* ===== OPEN READER ===== */
-async function openComicReader(zipBlob, name) {
+async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   const openSeq = ++readerOpenSeq;
   const overlay = document.getElementById("readerOverlay");
   const canvas = document.getElementById("readerCanvas");
@@ -355,6 +355,10 @@ async function openComicReader(zipBlob, name) {
     if (images.length === 0) {
       canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
       return;
+    }
+
+    if (typeof onFirstImageLoaded === "function") {
+      Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
     }
 
     readerPages = [];

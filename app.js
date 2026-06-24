@@ -130,6 +130,7 @@ let compressFolderName = null;
 let fileCoverUrls = [];
 const coverGeneratingIds = new Set();
 let coverHydrateSeq = 0;
+const MAX_AUTO_COVER_BYTES = 80 * 1024 * 1024;
 const pendingExternalUrls = [];
 let appBootDone = false;
 let currentFolder = null; // null = root; otherwise the folder name being viewed
@@ -398,7 +399,7 @@ function shouldRenderCover(f) {
 }
 
 function canGenerateComicCover(f) {
-  if (!f || f.isPrivate) return false;
+  if (!f || f.isPrivate || (f.size || 0) > MAX_AUTO_COVER_BYTES) return false;
   const ext = getFileExt(f.name);
   return ["zip", "cbz", "7z", "tar", "gz", "tgz"].includes(ext);
 }
@@ -435,7 +436,7 @@ async function makeCoverThumbnailBlob(imageBlob) {
 }
 
 async function ensureComicCover(f, sourceBlob, force = false) {
-  if ((!force && !canGenerateComicCover(f)) || f?.isPrivate || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
+  if ((!force && !canGenerateComicCover(f)) || f?.isPrivate || (!force && (f.size || 0) > MAX_AUTO_COVER_BYTES) || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
   if (typeof extractFirstComicImageBlob !== "function") return null;
   coverGeneratingIds.add(f.id);
   try {
@@ -451,6 +452,28 @@ async function ensureComicCover(f, sourceBlob, force = false) {
     return latest;
   } catch (e) {
     console.warn("[comic-cover] failed", f.name, e);
+    return null;
+  } finally {
+    coverGeneratingIds.delete(f.id);
+  }
+}
+
+async function saveComicCoverFromImage(f, imageBlob) {
+  if (!f || f.isPrivate || shouldRenderCover(f) || coverGeneratingIds.has(f.id)) return null;
+  coverGeneratingIds.add(f.id);
+  try {
+    const thumb = await makeCoverThumbnailBlob(imageBlob);
+    if (!thumb) return null;
+    const latest = await dbGet(f.id);
+    if (!latest || latest.isPrivate) return null;
+    latest.coverThumb = thumb;
+    latest.coverSig = getCoverSignature(latest);
+    await dbPut(latest);
+    const row = document.querySelector(`.file-row[data-id="${latest.id}"]`);
+    applyCoverToRow(row, latest);
+    return latest;
+  } catch (e) {
+    console.warn("[comic-cover] save first page failed", f.name, e);
     return null;
   } finally {
     coverGeneratingIds.delete(f.id);
@@ -2236,8 +2259,7 @@ async function openFileView(f) {
     // require admin privilege to perform the deep/recursive unwrap.
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
-        ensureComicCover(f, blob, true);
-        openComicReader(blob, f.name);
+        openComicReader(blob, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
         return;
       }
       toast("此文件实际为压缩包，需管理员权限解析", "info");
@@ -2268,7 +2290,10 @@ async function openFileView(f) {
     }
 
     modal.classList.add("active");
-  } catch (e) { console.error(e); toast(t("decryptErr"), "error"); }
+  } catch (e) {
+    console.error(e);
+    toast("打开文件失败: " + (e.message || e), "error");
+  }
 }
 
 function closePreview() { document.getElementById("previewModal").classList.remove("active"); document.getElementById("pvContent").innerHTML = ""; }
