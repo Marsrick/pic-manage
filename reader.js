@@ -1,5 +1,7 @@
 /* ===== COMIC READER STATE ===== */
 let readerPages = [];
+let readerImageBlobs = [];
+const READER_URL_WINDOW = 6;
 let readerName = "";
 let rPageIdx = 0;
 let rMode = "click"; // click | flip | slide | webtoon
@@ -13,6 +15,32 @@ let pageFlipInitSeq = 0;
 let pageFlipRenderUrls = [];
 let readerOpenSeq = 0;
 let readerExtractWorker = null;
+
+/* ===== LAZY OBJECT URL MANAGEMENT ===== */
+function ensureReaderPageUrl(idx) {
+  if (idx < 0 || idx >= readerPages.length) return null;
+  if (!readerPages[idx]) {
+    const blob = readerImageBlobs[idx];
+    if (!blob) return null;
+    readerPages[idx] = URL.createObjectURL(blob);
+  }
+  return readerPages[idx];
+}
+
+function revokeDistantReaderUrls(centerIdx) {
+  for (let i = 0; i < readerPages.length; i++) {
+    if (readerPages[i] && Math.abs(i - centerIdx) > READER_URL_WINDOW) {
+      URL.revokeObjectURL(readerPages[i]);
+      readerPages[i] = null;
+    }
+  }
+}
+
+function revokeAllReaderUrls() {
+  for (let i = 0; i < readerPages.length; i++) {
+    if (readerPages[i]) { URL.revokeObjectURL(readerPages[i]); readerPages[i] = null; }
+  }
+}
 
 /* ===== DECOMPRESSION UTILS ===== */
 function parseTar(arrayBuffer) {
@@ -68,10 +96,11 @@ async function extract7z(arrayBuffer) {
   if (typeof SevenZip === "undefined") {
     throw new Error("SevenZip library is not loaded.");
   }
+  const bh = (typeof _EXTRACT_BASE_HREF !== "undefined") ? _EXTRACT_BASE_HREF : "";
   const instance = await SevenZip({
     locateFile: (path) => {
-      if (path.endsWith('.wasm')) return 'lib/7zz.wasm';
-      return 'lib/' + path;
+      if (path.endsWith('.wasm')) return bh + 'lib/7zz.wasm';
+      return bh + 'lib/' + path;
     }
   });
 
@@ -339,58 +368,89 @@ async function isZipBlob(blob) {
   return head[0] === 0x50 && head[1] === 0x4B;
 }
 
-function extractZipImagesInWorker(blob, name) {
+function extractImagesInWorker(blob, name) {
   stopReaderExtractWorker();
+  const baseHref = location.href.replace(/[^/]*$/, "");
   const jszipUrl = new URL("lib/jszip.min.js", location.href).href;
-  const workerCode = `
+  const pakoUrl = new URL("lib/pako.min.js", location.href).href;
+  const sevenZipUrl = new URL("lib/7zz.umd.js", location.href).href;
+
+  const workerCode = [
+    "var _EXTRACT_BASE_HREF = '';",
+    parseTar.toString(),
+    extract7z.toString(),
+    isArchive.toString(),
+    detectMagicType.toString(),
+    isArchiveData.toString(),
+    isImageData.toString(),
+    isImageEntry.toString(),
+    exactBuffer.toString(),
+    extractAllImagesRecursive.toString(),
+    `
     self.onmessage = async (event) => {
-      const { blob, jszipUrl } = event.data;
+      const { blob, name, jszipUrl, pakoUrl, sevenZipUrl, baseHref } = event.data;
+      _EXTRACT_BASE_HREF = baseHref;
       try {
         importScripts(jszipUrl);
-        const zip = await JSZip.loadAsync(await blob.arrayBuffer());
-        const entries = [];
-        zip.forEach((relPath, entry) => {
-          if (entry.dir || relPath.startsWith("__MACOSX") || relPath.startsWith(".")) return;
-          entries.push(entry);
-        });
-        entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
-        const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
-        const images = [];
-        for (const entry of entries) {
-          const ext = (entry.name.split(".").pop() || "").toLowerCase();
-          if (!imageExts.has(ext)) continue;
-          const data = await entry.async("blob");
-          images.push({ name: entry.name, data });
+        importScripts(pakoUrl);
+        try { importScripts(sevenZipUrl); } catch (e) {}
+        const arrayBuffer = await blob.arrayBuffer();
+        const images = await extractAllImagesRecursive(name, arrayBuffer);
+        images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+        const BATCH = 12;
+        for (let i = 0; i < images.length; i += BATCH) {
+          const batch = images.slice(i, i + BATCH);
+          const done = i + BATCH >= images.length;
+          self.postMessage({ ok: true, batch, offset: i, total: images.length, done });
+          if (!done) await new Promise(r => setTimeout(r, 0));
         }
-        self.postMessage({ ok: true, images });
       } catch (error) {
         self.postMessage({ ok: false, error: error?.message || String(error) });
       }
-    };
-  `;
+    };`
+  ].join("\n\n");
+
   const workerUrl = URL.createObjectURL(new Blob([workerCode], { type: "application/javascript" }));
   const worker = new Worker(workerUrl);
   URL.revokeObjectURL(workerUrl);
   readerExtractWorker = worker;
+
   return new Promise((resolve, reject) => {
-    worker.onmessage = (event) => {
+    const allImages = [];
+    const cleanup = () => {
+      worker.onmessage = null;
+      worker.onerror = null;
       if (readerExtractWorker === worker) readerExtractWorker = null;
       worker.terminate();
-      if (event.data?.ok) resolve(event.data.images || []);
-      else reject(new Error(event.data?.error || "ZIP parse failed"));
+    };
+    worker.onmessage = (event) => {
+      const data = event.data;
+      if (!data?.ok) {
+        cleanup();
+        reject(new Error(data?.error || "Extraction failed"));
+        return;
+      }
+      allImages.push(...data.batch);
+      if (data.done) {
+        cleanup();
+        resolve(allImages);
+      }
     };
     worker.onerror = (event) => {
-      if (readerExtractWorker === worker) readerExtractWorker = null;
-      worker.terminate();
-      reject(new Error(event.message || "ZIP worker failed"));
+      cleanup();
+      reject(new Error(event.message || "Worker failed"));
     };
-    worker.postMessage({ blob, name, jszipUrl });
+    worker.postMessage({ blob, name, jszipUrl, pakoUrl, sevenZipUrl, baseHref });
   });
 }
 
 async function extractImagesForReader(name, blob) {
-  if (await isZipBlob(blob)) return extractZipImagesInWorker(blob, name);
-  return extractAllImagesRecursive(name, await blob.arrayBuffer());
+  try {
+    return await extractImagesInWorker(blob, name);
+  } catch (e) {
+    console.warn("[reader] worker extraction failed, falling back to main thread:", e);
+    return extractAllImagesRecursive(name, await blob.arrayBuffer());
+  }
 }
 
 /* ===== OPEN READER ===== */
@@ -403,8 +463,9 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   rPageIdx = 0;
   stopReaderExtractWorker();
   destroyPageFlip();
-  readerPages.forEach(u => URL.revokeObjectURL(u));
+  revokeAllReaderUrls();
   readerPages = [];
+  readerImageBlobs = [];
   initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
@@ -427,13 +488,12 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
       Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
     }
 
-    readerPages = [];
-    for (const img of images) {
-      readerPages.push(URL.createObjectURL(img.data));
-    }
+    readerImageBlobs = images.map(img => img.data);
+    readerPages = new Array(images.length).fill(null);
     if (openSeq !== readerOpenSeq) {
-      readerPages.forEach(u => URL.revokeObjectURL(u));
+      revokeAllReaderUrls();
       readerPages = [];
+      readerImageBlobs = [];
       return;
     }
 
@@ -454,8 +514,9 @@ function closeReader() {
   stopAuto();
   destroyPageFlip();
   cancelAnimationFrame(pfRAF);
-  readerPages.forEach(u => URL.revokeObjectURL(u));
+  revokeAllReaderUrls();
   readerPages = [];
+  readerImageBlobs = [];
   clearPageFlipRenderUrls();
   document.getElementById("readerOverlay").classList.remove("active");
   document.getElementById("readerCanvas").innerHTML = "";
@@ -492,6 +553,7 @@ function updateProgress() {
 
   // Preload adjacent pages
   preloadAdjacent();
+  revokeDistantReaderUrls(rPageIdx);
 }
 
 function preloadAdjacent() {
@@ -499,14 +561,12 @@ function preloadAdjacent() {
   for (let i = 1; i <= range; i++) {
     const next = rPageIdx + i;
     if (next < readerPages.length) {
-      const img = new Image();
-      img.src = readerPages[next];
+      ensureReaderPageUrl(next);
     }
   }
   const prev = rPageIdx - 1;
   if (prev >= 0) {
-    const img = new Image();
-    img.src = readerPages[prev];
+    ensureReaderPageUrl(prev);
   }
 }
 
@@ -535,6 +595,9 @@ function getPageFlipBookSize(stage) {
 
 async function preparePageFlipImages(width, height, initSeq) {
   clearPageFlipRenderUrls();
+  for (let i = 0; i < readerPages.length; i++) {
+    ensureReaderPageUrl(i);
+  }
   return readerPages;
 }
 
@@ -550,7 +613,7 @@ function renderPage() {
     const box = document.createElement("div"); box.className = "r-page-img-box r-swipe-box";
     const img = document.createElement("img");
     img.className = "r-click-page current";
-    img.src = readerPages[rPageIdx];
+    img.src = ensureReaderPageUrl(rPageIdx);
     img.alt = `Page ${rPageIdx+1}`;
 
     const tapL = document.createElement("div"); tapL.className = "r-tap-zone r-tap-left";
@@ -567,9 +630,10 @@ function renderPage() {
     }
   } else if (rMode === "slide") {
     const wrap = document.createElement("div"); wrap.className = "r-h-scroll"; wrap.id = "hScroll";
-    readerPages.forEach((src, i) => {
+    readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-h-page";
-      const img = document.createElement("img"); img.src = src;
+      const img = document.createElement("img"); img.loading = "lazy";
+      img.src = ensureReaderPageUrl(i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -580,9 +644,10 @@ function renderPage() {
     setTimeout(() => { wrap.scrollLeft = rPageIdx * wrap.clientWidth; }, 50);
   } else if (rMode === "webtoon") {
     const wrap = document.createElement("div"); wrap.className = "r-v-scroll"; wrap.id = "vScroll";
-    readerPages.forEach((src, i) => {
+    readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-v-page"; pg.id = `vp-${i}`;
-      const img = document.createElement("img"); img.src = src;
+      const img = document.createElement("img"); img.loading = "lazy";
+      img.src = ensureReaderPageUrl(i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -604,7 +669,7 @@ function renderPage() {
     // Show current page as a placeholder while the library loads
     const placeholder = document.createElement("img");
     placeholder.className = "pageflip-placeholder";
-    placeholder.src = readerPages[rPageIdx];
+    placeholder.src = ensureReaderPageUrl(rPageIdx);
     placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff;z-index:1;";
     stage.appendChild(placeholder);
     container.appendChild(stage);
@@ -848,7 +913,7 @@ function smoothstep(edge0, edge1, x) {
 function getCurlImg(idx) {
   if (idx < 0 || idx >= readerPages.length) return null;
   let im = curlImgCache.get(idx);
-  if (!im) { im = new Image(); im.src = readerPages[idx]; curlImgCache.set(idx, im); }
+  if (!im) { const url = ensureReaderPageUrl(idx); if (!url) return null; im = new Image(); im.src = url; curlImgCache.set(idx, im); }
   return im;
 }
 
@@ -1206,7 +1271,7 @@ function prepareClickSlide(dir) {
   box.querySelectorAll(".r-click-page.incoming").forEach(el => el.remove());
   const incoming = document.createElement("img");
   incoming.className = "r-click-page incoming";
-  incoming.src = readerPages[next];
+  incoming.src = ensureReaderPageUrl(next);
   incoming.alt = `Page ${next + 1}`;
   incoming.style.transition = "none";
   box.appendChild(incoming);
@@ -1229,7 +1294,7 @@ function finishClickSlide(state, commit) {
   if (commit) {
     rPageIdx = state.next;
     updateProgress();
-    state.current.src = readerPages[rPageIdx];
+    state.current.src = ensureReaderPageUrl(rPageIdx);
   }
   state.current.style.transition = "none";
   state.current.style.transform = "translate3d(0,0,0)";
@@ -1371,7 +1436,7 @@ function flipPage(dir, corner = "top") {
     if (animateClickSlide(dir, 0, true)) return;
     rPageIdx = next; updateProgress();
     const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
-    if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; img.src = readerPages[rPageIdx]; }
+    if (img) { if (img._resetZoom) img._resetZoom(); readerImageZoomed = false; img.src = ensureReaderPageUrl(rPageIdx); }
   } else if (rMode === "slide") {
     rPageIdx = next; updateProgress();
     const wrap = document.getElementById("hScroll");
@@ -1386,7 +1451,7 @@ function jumpPage(idx) {
   if (rMode === "click") {
     cancelClickSlide(true);
     const img = getClickCurrentImg() || document.querySelector(".r-page-img-box img");
-    if (img) img.src = readerPages[rPageIdx];
+    if (img) img.src = ensureReaderPageUrl(rPageIdx);
   } else if (rMode === "flip") {
     if (pageFlipBook) pageFlipBook.turnToPage(rPageIdx);
   } else if (rMode === "slide") {
@@ -1419,7 +1484,7 @@ function openSidebar() {
       item.className = "grid-thumb" + (i === rPageIdx ? " active" : "");
       const img = document.createElement("img");
       img.loading = "lazy";
-      img.src = readerPages[i];
+      img.src = ensureReaderPageUrl(i);
       const num = document.createElement("span");
       num.className = "grid-num";
       num.textContent = i + 1;
@@ -1511,7 +1576,7 @@ function layoutPageFan() {
       s = free.pop();
       if (!s) return;
       s._idx = idx;
-      s.querySelector("img").src = readerPages[idx];
+      s.querySelector("img").src = ensureReaderPageUrl(idx);
       s.querySelector(".pf-num").textContent = idx + 1;
     }
     const rel = idx - pfPos;
@@ -1544,7 +1609,7 @@ function syncReaderLive(idx) {
     `${String(idx + 1).padStart(2, "0")}/${readerPages.length}`;
   if (rMode === "click") {
     const img = document.querySelector(".r-page-img-box img");
-    if (img) { if (img._resetZoom) img._resetZoom(); img.src = readerPages[idx]; }
+    if (img) { if (img._resetZoom) img._resetZoom(); img.src = ensureReaderPageUrl(idx); }
   }
 }
 

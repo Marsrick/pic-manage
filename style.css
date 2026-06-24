@@ -1178,6 +1178,8 @@ body.file-touch-moving {
   justify-content: center;
   scroll-snap-align: start;
   scroll-snap-stop: always;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 100vw 100vh;
 }
 
 .r-h-page img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -1194,7 +1196,7 @@ body.file-touch-moving {
 }
 .r-v-scroll::-webkit-scrollbar { display: none; }
 
-.r-v-page { width: 100%; max-width: 800px; }
+.r-v-page { width: 100%; max-width: 800px; content-visibility: auto; contain-intrinsic-size: auto 1200px; }
 .r-v-page img { width: 100%; display: block; }
 
 /* Reader Bottom Controls */
