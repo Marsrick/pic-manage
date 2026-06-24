@@ -57,9 +57,10 @@ self.addEventListener("fetch", event => {
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then(cached => {
-      const networkResponse = fetch(request)
+  const isAppCode = /\.(?:css|js|webmanifest)$/i.test(url.pathname);
+  if (isAppCode) {
+    event.respondWith(
+      fetch(request)
         .then(response => {
           if (response.ok) {
             const copy = response.clone();
@@ -67,9 +68,18 @@ self.addEventListener("fetch", event => {
           }
           return response;
         })
-        .catch(() => cached);
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
 
-      return cached || networkResponse;
-    })
+  event.respondWith(
+    caches.match(request).then(cached => cached || fetch(request).then(response => {
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_VERSION).then(cache => cache.put(request, copy));
+      }
+      return response;
+    }))
   );
 });

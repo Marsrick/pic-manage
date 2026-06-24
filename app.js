@@ -8,7 +8,7 @@ const T = {
     feedbackTitle: "问题反馈", feedbackDesc: "请描述您遇到的问题，我们会尽快处理",
     labelDesc: "反馈内容", phDesc: "请详细描述您遇到的问题或改进建议...",
     submitFeedback: "提交反馈", feedbackOk: "反馈提交成功，感谢！",
-    gestureVerify: "验证管理员手势", gestureSetup: "设置管理员手势密码",
+    gestureVerify: "验证管理员手势", gestureVerifyApp: "验证应用手势", gestureSetup: "设置管理员手势密码",
     gestureConfirm: "请再次绘制以确认", gestureHintDraw: "请绘制手势密码",
     gestureWrong: "手势错误，请重试", gestureMismatch: "两次绘制不一致，已重置",
     gestureTooShort: "至少需要连接4个点", gestureSetOk: "管理员手势设置成功！",
@@ -58,7 +58,7 @@ const T = {
     feedbackTitle: "Feedback", feedbackDesc: "Describe any issues and we'll get back to you",
     labelDesc: "Details", phDesc: "Describe the issue or suggestions in detail...",
     submitFeedback: "Submit", feedbackOk: "Feedback submitted, thank you!",
-    gestureVerify: "Verify Admin Gesture", gestureSetup: "Set Admin Gesture",
+    gestureVerify: "Verify Admin Gesture", gestureVerifyApp: "Verify App Gesture", gestureSetup: "Set Admin Gesture",
     gestureConfirm: "Draw again to confirm", gestureHintDraw: "Draw your unlock pattern",
     gestureWrong: "Incorrect pattern, try again", gestureMismatch: "Patterns don't match, reset",
     gestureTooShort: "Connect at least 4 nodes", gestureSetOk: "Admin gesture set!",
@@ -1292,7 +1292,7 @@ function openGesture() {
     const normalHash = localStorage.getItem("g_normal_hash");
     if (hash || normalHash) {
       gestureStep = 0; // Verify
-      document.getElementById("gTitle").textContent = t("gestureVerify");
+      document.getElementById("gTitle").textContent = isStartupUnlock ? t("gestureVerifyApp") : t("gestureVerify");
     } else {
       gestureStep = 1; // Setup admin by default
       document.getElementById("gTitle").textContent = t("gestureSetup");
@@ -1389,6 +1389,8 @@ async function endDraw() {
       isStartupUnlock = false;
       backgroundReAuth = false;
       sessionStorage.removeItem("isAdminActive");
+      sessionStorage.removeItem("adminReAuthPending");
+      localStorage.removeItem("wasAdminBeforeBackground");
       isAdmin = false;
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
@@ -1410,6 +1412,8 @@ async function endDraw() {
       isStartupUnlock = false;
       backgroundReAuth = false;
       sessionStorage.removeItem("isAdminActive");
+      sessionStorage.removeItem("adminReAuthPending");
+      localStorage.removeItem("wasAdminBeforeBackground");
       isAdmin = false;
       adminKey = null;
       document.getElementById("adminBadge").style.display = "none";
@@ -1490,7 +1494,9 @@ function forgetGesture() {
 /* ===== ADMIN MODE ===== */
 function enterAdmin() {
   isAdmin = true;
-  localStorage.setItem("wasAdminBeforeBackground", "true");
+  sessionStorage.setItem("isAdminActive", "true");
+  sessionStorage.removeItem("adminReAuthPending");
+  localStorage.removeItem("wasAdminBeforeBackground");
   document.getElementById("adminBadge").style.display = "flex";
   document.getElementById("logoutAdminBtn").style.display = "";
   switchNav("viewFiles", null);
@@ -1501,6 +1507,8 @@ function enterAdmin() {
 function logoutAdmin() {
   isAdmin = false; adminKey = null;
   currentFolder = null;
+  sessionStorage.removeItem("isAdminActive");
+  sessionStorage.removeItem("adminReAuthPending");
   localStorage.removeItem("wasAdminBeforeBackground");
   document.getElementById("adminBadge").style.display = "none";
   document.getElementById("logoutAdminBtn").style.display = "none";
@@ -1511,19 +1519,33 @@ function logoutAdmin() {
 
 /* ===== BACKGROUND LOCK (visibilitychange, pause/resume, pagehide/pageshow) ===== */
 let backgroundReAuth = false; // Flag: we are in re-authentication mode after background resume
+let appIsInBackground = false;
 
 function handleAppBackground() {
+  // iOS/Capacitor may emit visibilitychange, pause and pagehide for the same
+  // transition. Capture the foreground state only once so a later duplicate
+  // event cannot overwrite an admin snapshot after isAdmin has been cleared.
+  if (appIsInBackground) return;
+  appIsInBackground = true;
+
   // Lock the external-file queue whenever the app loses foreground so
   // that any URL delivered on the way back up (e.g. WeChat -> "Open with")
   // waits for the re-auth flow to resolve before prepUpload runs.
   appBootDone = false;
 
   if (isAdmin) {
+    sessionStorage.setItem("adminReAuthPending", "true");
+    sessionStorage.removeItem("isAdminActive");
     adminKey = null;
     isAdmin = false;
     document.getElementById("adminBadge").style.display = "none";
     document.getElementById("logoutAdminBtn").style.display = "none";
     refreshFileList();
+  } else {
+    // Public mode must never inherit a stale admin re-auth marker.
+    sessionStorage.removeItem("adminReAuthPending");
+    sessionStorage.removeItem("isAdminActive");
+    localStorage.removeItem("wasAdminBeforeBackground");
   }
 }
 
@@ -1533,15 +1555,18 @@ function triggerBackgroundReAuth() {
     return;
   }
 
-  const wasAdmin = localStorage.getItem("wasAdminBeforeBackground") === "true";
+  const wasAdmin = sessionStorage.getItem("adminReAuthPending") === "true";
   const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
   const adminHash = localStorage.getItem("g_hash");
   const normalHash = localStorage.getItem("g_normal_hash");
 
   const willPromptGesture = (wasAdmin || startupLock) && (adminHash || normalHash);
+  appIsInBackground = false;
 
   if (willPromptGesture) {
     // Clear immediately to prevent double trigger on subsequent resume/pageshow events
+    sessionStorage.removeItem("adminReAuthPending");
+    sessionStorage.removeItem("isAdminActive");
     localStorage.removeItem("wasAdminBeforeBackground");
 
     if (startupLock) {
@@ -1563,6 +1588,9 @@ function triggerBackgroundReAuth() {
     openGesture();
     // markAppBootDone will run from the gesture-success handler
   } else {
+    sessionStorage.removeItem("adminReAuthPending");
+    sessionStorage.removeItem("isAdminActive");
+    localStorage.removeItem("wasAdminBeforeBackground");
     // No re-auth required — release the external-file queue immediately.
     markAppBootDone();
   }
@@ -2831,7 +2859,11 @@ window.addEventListener("DOMContentLoaded", async () => {
   
   updateSecuritySettingsUI();
 
-  const wasAdmin = sessionStorage.getItem("isAdminActive") === "true";
+  // Migrate away from the old persistent marker, which could survive a
+  // public-mode session and incorrectly request admin authentication.
+  localStorage.removeItem("wasAdminBeforeBackground");
+  const wasAdmin = sessionStorage.getItem("adminReAuthPending") === "true"
+    || sessionStorage.getItem("isAdminActive") === "true";
   const startupLock = localStorage.getItem("g_startup_lock_enabled") === "true";
   const normalHash = localStorage.getItem("g_normal_hash");
   if (wasAdmin) {

@@ -121,7 +121,7 @@ html, body {
 .header-title {
   font-size: 1.1rem;
   font-weight: 700;
-  color: var(--text-white);
+  color: var(--text-primary);
   letter-spacing: -0.01em;
 }
 
@@ -306,14 +306,18 @@ html, body {
 }
 
 .file-toolbar {
+  width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 4px 16px 10px;
+  overflow: hidden;
 }
 
 .sort-control {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -321,9 +325,19 @@ html, body {
   color: var(--text-muted);
   font-size: 0.72rem;
   font-weight: 600;
+  line-height: 1;
+}
+
+.sort-control > span {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .sort-control select {
+  flex: 0 1 150px;
+  width: 150px;
   min-width: 0;
   max-width: 150px;
   height: 34px;
@@ -339,6 +353,7 @@ html, body {
 .sort-control select:focus { border-color: var(--accent-blue); }
 
 .view-switcher {
+  flex: 0 0 auto;
   display: flex;
   padding: 3px;
   border: 1px solid var(--border-default);
@@ -364,6 +379,13 @@ html, body {
   background: var(--bg-card);
   color: var(--accent-blue);
   box-shadow: 0 2px 7px rgba(15, 23, 42, 0.08);
+}
+
+@media (max-width: 360px) {
+  .file-toolbar { gap: 8px; padding-inline: 12px; }
+  .sort-control { gap: 6px; }
+  .sort-control > span { display: none; }
+  .sort-control select { width: 132px; flex-basis: 132px; }
 }
 
 .file-list { padding: 0 16px; }
