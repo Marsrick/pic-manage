@@ -2576,9 +2576,11 @@ async function openFileView(f) {
   try {
     const ext = getFileExt(f.name);
     const extLooksArchive = ["zip", "cbz", "cbr", "tar", "gz", "tgz", "7z", "rar"].includes(ext);
+    const LARGE_PREVIEW_BYTES = 64 * 1024 * 1024;
     let blob = null;
     let fmt = "unknown";
     let isText = false;
+    let loadedBlob = false;
 
     const loadBlob = async () => {
       if (blob) return blob;
@@ -2589,6 +2591,7 @@ async function openFileView(f) {
       } else {
         blob = full.data;
       }
+      loadedBlob = !!blob;
       return blob;
     };
 
@@ -2598,7 +2601,7 @@ async function openFileView(f) {
       ({ fmt, isText } = await probeBlobFormat(blob));
     } else {
       ({ fmt, isText } = await probeStoredFileFormat(f));
-      if (f.data) blob = f.data;
+      if (f.data && f.size <= LARGE_PREVIEW_BYTES) blob = f.data;
     }
 
     if (isArchiveFormat(fmt)) {
@@ -2624,17 +2627,23 @@ async function openFileView(f) {
       const a = document.createElement("a"); a.href = url; a.download = f.name; a.click(); URL.revokeObjectURL(url);
     };
 
-    if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
+    if ((isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) && f.size > LARGE_PREVIEW_BYTES) {
+      content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>图片文件过大，建议直接下载查看</p></div>";
+    } else if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
       blob = await loadBlob();
       if (!blob) return;
       const img = document.createElement("img"); img.src = URL.createObjectURL(blob); content.appendChild(img);
       img.addEventListener("load", () => enableImageZoom(img, content), { once: true });
     } else if (fmt === "pdf" || ext === "pdf") {
-      blob = await loadBlob();
-      if (!blob) return;
-      const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
+      if (f.size > LARGE_PREVIEW_BYTES) {
+        content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>PDF 文件过大，建议直接下载查看</p></div>";
+      } else {
+        blob = await loadBlob();
+        if (!blob) return;
+        const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
+      }
     } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
-      if ((f.size || 0) > MAX_TEXT_PREVIEW_BYTES) {
+      if ((f.size || 0) > MAX_TEXT_PREVIEW_BYTES || f.size > LARGE_PREVIEW_BYTES) {
         content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>文件过大，不直接预览，请下载查看</p></div>";
       } else {
         blob = await loadBlob();
@@ -2643,7 +2652,11 @@ async function openFileView(f) {
         const pre = document.createElement("pre"); pre.textContent = text; content.appendChild(pre);
       }
     } else {
-      content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>该格式不支持预览，请直接下载</p></div>";
+      if (f.size > LARGE_PREVIEW_BYTES) {
+        content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>该文件较大，建议直接下载查看</p></div>";
+      } else {
+        content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>该格式不支持预览，请直接下载</p></div>";
+      }
     }
 
     modal.classList.add("active");

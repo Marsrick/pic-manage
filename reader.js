@@ -23,6 +23,7 @@ let readerLargeModeLocked = false;
 const READER_LAZY_ZIP_BYTES = 48 * 1024 * 1024;
 const READER_HEAVY_MODE_PAGE_LIMIT = 180;
 const READER_HEAVY_MODE_BYTES = 96 * 1024 * 1024;
+const READER_PAGE_PREFETCH_BYTES = 24 * 1024 * 1024;
 const READER_PLACEHOLDER_SRC = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 460"><rect width="320" height="460" fill="#f8fafc"/><g fill="none" stroke="#cbd5e1" stroke-width="10" stroke-linecap="round"><path d="M95 210h130"/><path d="M115 245h90"/></g><text x="160" y="285" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#94a3b8">Loading</text></svg>`
 );
@@ -692,7 +693,8 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
       readerImageBlobs = images.map(img => img.data);
       readerPages = new Array(images.length).fill(null);
-      readerLargeModeLocked = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES;
+      const totalBytes = readerImageBlobs.reduce((sum, blob) => sum + (blob?.size || 0), 0);
+      readerLargeModeLocked = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES || totalBytes > READER_HEAVY_MODE_BYTES;
       if (readerLargeModeLocked && rMode !== "click") rMode = "click";
     }
     if (openSeq !== readerOpenSeq) {
@@ -704,7 +706,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
     initReaderUI();
     renderPage();
-    toast(`${readerPages.length} ${t("parseOk")}${result.lazy ? " · 按需加载" : ""}`, "success");
+    toast(`${readerPages.length} ${t("parseOk")}${result.lazy ? " · 按需加载" : ""}${readerLargeModeLocked ? " · 省内存模式" : ""}`, "success");
   } catch (e) {
     console.error(e);
     if (openSeq === readerOpenSeq) {
@@ -777,7 +779,8 @@ function updateProgress() {
 }
 
 function preloadAdjacent() {
-  const range = 2; // Preload next 2 pages and previous 1 page
+  const totalBytes = readerImageBlobs.reduce((sum, blob) => sum + (blob?.size || 0), 0);
+  const range = totalBytes > READER_PAGE_PREFETCH_BYTES ? 1 : 2;
   for (let i = 1; i <= range; i++) {
     const next = rPageIdx + i;
     if (next < readerPages.length) {
@@ -1207,18 +1210,19 @@ function drawPaperBackCurl(foldX, topOff, botOff, touchYRatio = 0.72, curlTilt =
   const ctx = curlCtx;
   if (!ctx) return;
   foldX = clampRange(foldX, 0, curlCW);
-  touchYRatio = clampRange(touchYRatio || 0.72, 0.12, 0.88);
+  touchYRatio = clampRange(touchYRatio || 0.72, 0.10, 0.90);
   const progress = clampRange(1 - foldX / curlCW, 0, 1);
   const live = Math.sin(clampRange(progress, 0, 1) * Math.PI);
+  const dragEase = smoothstep(0, 1, progress);
   const yAnchor = curlCH * touchYRatio;
-  const tilt = clampRange(curlTilt + (touchYRatio - 0.5) * 0.18, -0.28, 0.28) * (0.18 + live * 0.82);
-  const curve = curlCW * (0.024 + 0.018 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * live;
+  const tilt = clampRange(curlTilt + (touchYRatio - 0.5) * 0.18, -0.34, 0.34) * (0.22 + live * 0.78);
+  const curve = curlCW * (0.020 + 0.022 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * (0.5 + live * 0.5);
   const creaseAt = (y, bias = 0) => foldX + tilt * (y - yAnchor) + bias;
-  const topFold = creaseAt(0, -curve * 0.52);
-  const midFold = creaseAt(curlCH * 0.5, curve * 0.12);
-  const bottomFold = creaseAt(curlCH, curve * 0.50);
-  const outerTopX = curlCW - curve * 0.18;
-  const outerBottomX = curlCW - curve * 0.42;
+  const topFold = creaseAt(0, -curve * (0.42 + dragEase * 0.10));
+  const midFold = creaseAt(curlCH * 0.5, curve * (0.08 + dragEase * 0.08));
+  const bottomFold = creaseAt(curlCH, curve * (0.42 + dragEase * 0.12));
+  const outerTopX = curlCW - curve * 0.14;
+  const outerBottomX = curlCW - curve * 0.34;
   const mapX = (x) => side > 0 ? x : curlCW - x;
   const edgeX = side > 0 ? curlCW : 0;
   const farX = side > 0 ? 0 : curlCW;
@@ -1275,7 +1279,7 @@ function drawPaperBackCurl(foldX, topOff, botOff, touchYRatio = 0.72, curlTilt =
   ctx.fillRect(0, 0, curlCW, curlCH);
   ctx.restore();
 
-  const shadowW = Math.max(20 * curlDpr, curlCW * (0.08 + live * 0.05));
+  const shadowW = Math.max(18 * curlDpr, curlCW * (0.07 + live * 0.04));
   const shadowStart = mapX(foldX);
   const sg = ctx.createLinearGradient(shadowStart, 0, shadowStart + side * shadowW, 0);
   sg.addColorStop(0, `rgba(0,0,0,${0.20 + live * 0.16})`);
@@ -1327,13 +1331,14 @@ function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
   renderPageToOff(curlOffA, topIdx);
   renderPageToOff(curlOffB, botIdx);
   const dist = Math.abs(fold1 - fold0) / Math.max(1, curlCW);
-  const dur = Math.max(220, 520 * dist);
+  const dur = Math.max(180, 430 * dist);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
     const ease = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - p * 0.35));
+    const tension = 1 - Math.pow(1 - p, 2.2);
+    drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - tension * 0.45));
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else {
       rPageIdx = next; updateProgress();
@@ -1354,13 +1359,13 @@ function cancelCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
   renderPageToOff(curlOffB, botIdx);
   const fold1 = dir > 0 ? curlCW : 0;
   const dist = Math.abs(fold1 - startFold) / Math.max(1, curlCW);
-  const dur = Math.max(140, 260 * dist);
+  const dur = Math.max(120, 210 * dist);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
-    const ease = 1 - Math.pow(1 - p, 3);
-    drawCurlFrame(startFold + (fold1 - startFold) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - p));
+    const ease = 1 - Math.pow(1 - p, 2.8);
+    drawCurlFrame(startFold + (fold1 - startFold) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - p * 0.8));
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
     else { drawCurlStatic(); curlBusy = false; }
   };
@@ -1371,21 +1376,21 @@ function flipNextPage() { if (!curlBusy) animateCurl(1); }
 function flipPrevPage() { if (!curlBusy) animateCurl(-1); }
 
 function attachCurlGestures(canvas) {
-  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72, curlTilt = 0;
+  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72, curlTilt = 0, liveFold = 0;
 
   const tapZone = (clientX) => {
     const r = canvas.getBoundingClientRect();
     const x = clientX - r.left;
-    if (x < r.width * 0.30) flipPrevPage();
-    else if (x > r.width * 0.70) flipNextPage();
+    if (x < r.width * 0.28) flipPrevPage();
+    else if (x > r.width * 0.72) flipNextPage();
     else toggleControls();
   };
 
   const foldFromDelta = (dx) => {
     const d = dx * curlDpr;
     return dir > 0
-      ? Math.max(0, Math.min(curlCW, curlCW + d))   // next: closed(CW) -> open(0)
-      : Math.max(0, Math.min(curlCW, d));            // prev: closed(0) -> covered(CW)
+      ? Math.max(0, Math.min(curlCW, curlCW + d))
+      : Math.max(0, Math.min(curlCW, d));
   };
 
   canvas.addEventListener("touchstart", (e) => {
@@ -1393,14 +1398,14 @@ function attachCurlGestures(canvas) {
     const r = canvas.getBoundingClientRect();
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
     touchYRatio = clampRange((sy - r.top) / Math.max(1, r.height), 0.12, 0.88);
-    moved = false; dir = 0; dragging = true; curlTilt = 0;
+    moved = false; dir = 0; dragging = true; curlTilt = 0; liveFold = 0;
   }, { passive: true });
 
   canvas.addEventListener("touchmove", (e) => {
     if (!dragging || e.touches.length !== 1) return;
     const x = e.touches[0].clientX, y = e.touches[0].clientY;
     const dx = x - sx, dy = y - sy;
-    if (!moved && Math.abs(dx) > 5 && Math.abs(dx) > Math.abs(dy)) {
+    if (!moved && Math.abs(dx) > 4 && Math.abs(dx) > Math.abs(dy) * 0.82) {
       dir = dx < 0 ? 1 : -1;
       if (rPageIdx + dir < 0 || rPageIdx + dir >= readerPages.length) { dragging = false; return; }
       moved = true;
@@ -1411,10 +1416,11 @@ function attachCurlGestures(canvas) {
       e.preventDefault();
       const r = canvas.getBoundingClientRect();
       const liveTouchY = clampRange((y - r.top) / Math.max(1, r.height), 0.10, 0.90);
-      touchYRatio = touchYRatio * 0.68 + liveTouchY * 0.32;
-      const dragSlope = dy / Math.max(60, Math.abs(dx) * 1.15);
-      curlTilt = clampRange(dragSlope * 0.22, -0.24, 0.24);
-      drawCurlFrame(foldFromDelta(dx), curlOffA, curlOffB, dir, touchYRatio, curlTilt);
+      touchYRatio = touchYRatio * 0.6 + liveTouchY * 0.4;
+      const dragSlope = dy / Math.max(45, Math.abs(dx) * 0.95);
+      curlTilt = clampRange(dragSlope * 0.28, -0.30, 0.30);
+      liveFold = foldFromDelta(dx);
+      drawCurlFrame(liveFold, curlOffA, curlOffB, dir, touchYRatio, curlTilt);
     }
   }, { passive: false });
 
@@ -1426,9 +1432,9 @@ function attachCurlGestures(canvas) {
     const dx = e.changedTouches[0].clientX - sx;
     const fold = foldFromDelta(dx);
     const frac = fold / curlCW;
-    const flick = dt < 380 && Math.abs(dx) > 18;
-    if (dir > 0) { (flick || frac < 0.72) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
-    else { (flick || frac > 0.28) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
+    const flick = dt < 300 && Math.abs(dx) > 16;
+    if (dir > 0) { (flick || frac < 0.76) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
+    else { (flick || frac > 0.24) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
   }, { passive: true });
 
   canvas.addEventListener("click", (e) => {
