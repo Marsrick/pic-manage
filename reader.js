@@ -20,10 +20,11 @@ let readerLazyPending = new Map();
 let readerLazyPageNames = [];
 let readerLazyMode = false;
 let readerLargeModeLocked = false;
-const READER_LAZY_ZIP_BYTES = 48 * 1024 * 1024;
-const READER_HEAVY_MODE_PAGE_LIMIT = 180;
-const READER_HEAVY_MODE_BYTES = 96 * 1024 * 1024;
-const READER_PAGE_PREFETCH_BYTES = 24 * 1024 * 1024;
+const READER_LAZY_ZIP_BYTES = 16 * 1024 * 1024;
+const READER_HEAVY_MODE_PAGE_LIMIT = 80;
+const READER_HEAVY_MODE_BYTES = 48 * 1024 * 1024;
+const READER_PAGE_PREFETCH_BYTES = 8 * 1024 * 1024;
+const READER_LARGE_ARCHIVE_BYTES = 180 * 1024 * 1024;
 const READER_PLACEHOLDER_SRC = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 460"><rect width="320" height="460" fill="#f8fafc"/><g fill="none" stroke="#cbd5e1" stroke-width="10" stroke-linecap="round"><path d="M95 210h130"/><path d="M115 245h90"/></g><text x="160" y="285" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#94a3b8">Loading</text></svg>`
 );
@@ -507,6 +508,10 @@ async function shouldUseLazyZipReader(name, blob) {
     && (blob.size >= READER_LAZY_ZIP_BYTES || /iphone|ipad|ipod|android/i.test(navigator.userAgent || ""));
 }
 
+function shouldForceReaderLazyMode(blob) {
+  return !!blob && blob.size >= READER_LARGE_ARCHIVE_BYTES;
+}
+
 function createLazyZipReader(blob, name, initArrayBuffer = null) {
   stopReaderLazyWorker();
   const jszipUrl = new URL("lib/jszip.min.js", location.href).href;
@@ -619,6 +624,13 @@ function requestReaderPageBlob(idx) {
 }
 
 async function extractImagesForReader(name, blob) {
+  if (shouldForceReaderLazyMode(blob)) {
+    try {
+      return await createLazyZipReader(blob, name);
+    } catch (e) {
+      console.warn("[reader] forced lazy mode failed, continuing with fallback:", e);
+    }
+  }
   if (await shouldUseLazyZipReader(name, blob)) {
     try {
       return await createLazyZipReader(blob, name);
