@@ -197,21 +197,51 @@ async function dbPutChunk(fileId, index, data) {
 function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const store = tx.objectStore(CHUNK_STORE); const idx = store.index("fileId"); const r = idx.getAll(IDBKeyRange.only(fileId)); r.onsuccess = () => res((r.result || []).sort((a, b) => a.index - b.index)); r.onerror = () => rej(r.error); }); }
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
 async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
-async function dbBlobFromChunks(fileId, expectedCount) {
+function createChunkMissingError(fileId, expectedCount, chunks, missing) {
+  const err = new Error("IndexedDB chunk missing");
+  err.code = "IDB_CHUNK_MISSING";
+  err.fileId = fileId;
+  err.expectedCount = expectedCount || 0;
+  err.actualCount = chunks?.length || 0;
+  err.missing = missing || [];
+  return err;
+}
+async function dbBlobFromChunks(fileId, expectedCount, expectedSize = null) {
+  const chunks = await dbGetChunks(fileId);
   if (!expectedCount) {
-    const chunks = await dbGetChunks(fileId);
+    if (!chunks.length) throw createChunkMissingError(fileId, expectedCount, chunks, [0]);
     return new Blob(chunks.map(c => c.data));
   }
+  const chunkMap = new Map(chunks.map(c => [Number(c.index), c]));
+  const missing = [];
   const parts = [];
   for (let index = 0; index < expectedCount; index++) {
-    const chunk = await dbGetChunk(fileId, index);
-    if (!chunk?.data) throw new Error("IndexedDB chunk missing");
-    parts.push(chunk.data);
+    const chunk = chunkMap.get(index) || await dbGetChunk(fileId, index);
+    if (!chunk?.data) missing.push(index);
+    else parts.push(chunk.data);
     await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  if (missing.length) {
+    const continuous = [];
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunkMap.get(index);
+      if (!chunk?.data) break;
+      continuous.push(chunk.data);
+    }
+    const continuousBytes = continuous.reduce((sum, data) => sum + (data?.byteLength || data?.size || 0), 0);
+    if (continuous.length > 0
+      && continuous.length === chunks.length
+      && chunks.length < expectedCount
+      && Number.isFinite(expectedSize)
+      && continuousBytes >= expectedSize) {
+      console.warn("[idb] chunkCount metadata mismatch; using available chunks", { fileId, expectedCount, actualCount: chunks.length, expectedSize, continuousBytes });
+      return new Blob(continuous);
+    }
+    throw createChunkMissingError(fileId, expectedCount, chunks, missing);
   }
   return new Blob(parts);
 }
-async function ensureFileData(f) { if (!f || f.data || !f.isChunked) return f; return { ...f, data: await dbBlobFromChunks(f.id, f.chunkCount) }; }
+async function ensureFileData(f) { if (!f || f.data || !f.isChunked) return f; return { ...f, data: await dbBlobFromChunks(f.id, f.chunkCount, f.isPrivate ? null : f.size) }; }
 async function dbAddChunked(obj) {
   const data = obj.data;
   const chunkCount = Math.ceil(data.size / IDB_CHUNK_BYTES);
@@ -535,7 +565,7 @@ async function probeStoredFileFormat(f) {
   if (!f?.isChunked) return { fmt: "unknown", isText: false };
   const first = await dbGetChunk(f.id, 0);
   const raw = first?.data;
-  if (!raw) throw new Error("IndexedDB chunk missing");
+  if (!raw) throw createChunkMissingError(f.id, f.chunkCount, await dbGetChunks(f.id), [0]);
   const buf = raw instanceof Blob ? await raw.slice(0, 512).arrayBuffer() : raw.slice(0, 512);
   return probeBytesFormat(new Uint8Array(buf));
 }
@@ -2714,6 +2744,13 @@ async function openFileView(f) {
     modal.classList.add("active");
   } catch (e) {
     console.error(e);
+    if (e?.code === "IDB_CHUNK_MISSING" || /IndexedDB chunk missing/i.test(String(e?.message || e))) {
+      const missingText = Array.isArray(e.missing) && e.missing.length
+        ? `，缺失分块：${e.missing.slice(0, 5).join(",")}${e.missing.length > 5 ? "..." : ""}`
+        : "";
+      toast(`文件数据分块缺失，可能是导入中断或浏览器清理了本地数据。请重新导入该文件（ID:${e.fileId || f.id}${missingText}）`, "error");
+      return;
+    }
     toast("打开文件失败: " + (e.message || e), "error");
   }
 }
