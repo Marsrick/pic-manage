@@ -691,7 +691,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
       const firstBlob = await requestReaderPageBlob(0).catch(() => null);
       if (openSeq !== readerOpenSeq) return;
-      if (typeof onFirstImageLoaded === "function" && firstBlob) {
+      if (!readerLargeModeLocked && typeof onFirstImageLoaded === "function" && firstBlob) {
         Promise.resolve(onFirstImageLoaded(firstBlob)).catch(e => console.warn("[comic-cover] first page callback failed", e));
       }
     } else {
@@ -699,15 +699,14 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
       // Natural Alphanumeric Sort
       images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
 
-      if (typeof onFirstImageLoaded === "function") {
-        Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
-      }
-
       readerImageBlobs = images.map(img => img.data);
       readerPages = new Array(images.length).fill(null);
       const totalBytes = readerImageBlobs.reduce((sum, blob) => sum + (blob?.size || 0), 0);
       readerLargeModeLocked = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES || totalBytes > READER_HEAVY_MODE_BYTES;
       if (readerLargeModeLocked && rMode !== "click") rMode = "click";
+      if (!readerLargeModeLocked && typeof onFirstImageLoaded === "function") {
+        Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
+      }
     }
     if (openSeq !== readerOpenSeq) {
       revokeAllReaderUrls();
@@ -898,17 +897,13 @@ function renderPage() {
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
     readerImageZoomed = false;
-    const stage = document.createElement("div"); stage.className = "pageflip-stage"; stage.id = "flipStage";
-    const hitLayer = document.createElement("div"); hitLayer.className = "pageflip-hit-layer";
-    stage.appendChild(hitLayer);
-    // Show current page as a placeholder while the library loads
-    const placeholder = document.createElement("img");
-    placeholder.className = "pageflip-placeholder";
-    setReaderImgSrc(placeholder, rPageIdx);
-    placeholder.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;";
-    stage.appendChild(placeholder);
+    const stage = document.createElement("div"); stage.className = "pageflip-stage tomato-flip-stage"; stage.id = "flipStage";
+    const canvas = document.createElement("canvas");
+    canvas.className = "flip-canvas";
+    stage.appendChild(canvas);
+    stage.onclick = () => { if (!curlBusy) toggleControls(); };
     container.appendChild(stage);
-    setTimeout(() => initPageFlip(stage, placeholder), 30);
+    setTimeout(() => initCurl(stage, canvas), 30);
   }
 }
 
@@ -1648,7 +1643,11 @@ function initReaderGestures() {
 /* ===== PAGE NAVIGATION ===== */
 function flipPage(dir, corner = "top") {
   if (rMode === "flip") {
-    if (!pageFlipBook) return;
+    if (!pageFlipBook) {
+      if (dir > 0) flipNextPage();
+      else flipPrevPage();
+      return;
+    }
     const current = typeof pageFlipBook.getCurrentPageIndex === "function"
       ? pageFlipBook.getCurrentPageIndex()
       : rPageIdx;
@@ -1692,6 +1691,7 @@ function jumpPage(idx) {
     if (img) setReaderImgSrc(img, rPageIdx);
   } else if (rMode === "flip") {
     if (pageFlipBook) pageFlipBook.turnToPage(rPageIdx);
+    else drawCurlStatic();
   } else if (rMode === "slide") {
     const wrap = document.getElementById("hScroll");
     if (wrap) wrap.scrollLeft = rPageIdx * wrap.clientWidth;

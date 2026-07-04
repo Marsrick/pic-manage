@@ -381,11 +381,38 @@ html, body {
   box-shadow: 0 2px 7px rgba(15, 23, 42, 0.08);
 }
 
+.folder-create-btn {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.10);
+  color: var(--accent-blue);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-family);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folder-create-btn svg { width: 17px; height: 17px; }
+
+.folder-create-btn:active {
+  transform: translateY(1px);
+}
+
 @media (max-width: 360px) {
   .file-toolbar { gap: 8px; padding-inline: 12px; }
   .sort-control { gap: 6px; }
   .sort-control > span { display: none; }
   .sort-control select { width: 132px; flex-basis: 132px; }
+  .folder-create-btn { width: 36px; padding: 0; }
+  .folder-create-btn span { display: none; }
 }
 
 .file-list { padding: 0 16px; }

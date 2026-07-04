@@ -136,6 +136,7 @@ const PRIVATE_ENCRYPT_CHUNK_BYTES = 8 * 1024 * 1024;
 const pendingExternalUrls = [];
 let appBootDone = false;
 let currentFolder = null; // null = root; otherwise the folder name being viewed
+const CUSTOM_FOLDERS_KEY = "pm_custom_folders";
 
 const DB = "PicManageDB";
 const DB_VERSION = 2;
@@ -411,6 +412,7 @@ function triggerUpload() {
 
 function triggerFolderUpload(folderName) {
   uploadTargetFolder = normalizeFolderName(folderName);
+  rememberFolder(uploadTargetFolder);
   document.getElementById("fileInput").click();
 }
 
@@ -804,7 +806,7 @@ async function refreshFileList() {
 
     // Grouped view (folders + root files) only at root, "all" filter, no search.
     if (currentFolder === null && !searching && currentFilter === "all") {
-      const folderNames = [...new Set(base.filter(f => f.folder).map(f => f.folder))]
+      const folderNames = getVisibleFolderNames(base)
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }) * (fileSort === "name-desc" ? -1 : 1));
       const rootFiles = sortFiles(base.filter(f => !f.folder));
 
@@ -848,6 +850,7 @@ function emptyPlaceholderHtml() {
 }
 
 function renderFolderRow(name, base) {
+  const safeName = escapeHtml(name);
   const count = base.filter(f => f.folder === name).length;
   const hasPrivate = base.some(f => f.folder === name && f.isPrivate);
   const hasPublic = base.some(f => f.folder === name && !f.isPrivate);
@@ -861,10 +864,10 @@ function renderFolderRow(name, base) {
     : "";
 
   return `
-    <div class="file-row folder-row" data-folder="${name}">
+    <div class="file-row folder-row" data-folder="${safeName}">
       <div class="file-icon-wrap folder"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
       <div class="file-info">
-        <div class="file-name">${name}</div>
+        <div class="file-name">${safeName}</div>
         <div class="file-meta-row"><span class="file-size-text">${count} 项</span></div>
       </div>
       <div class="file-row-actions">
@@ -921,6 +924,7 @@ function bindFolderEvents(area) {
       if (!confirm(`删除文件夹「${name}」及其中所有文件？此操作无法恢复！`)) return;
       const all = await dbAll();
       for (const f of all.filter(x => x.folder === name)) await dbDel(f.id);
+      forgetCustomFolder(name);
       toast(t("deleteOk"), "success");
       refreshFileList();
     });
@@ -1844,6 +1848,7 @@ async function saveFileAs(isPrivate) {
 
   try {
     if (isPrivate && !adminKey) { toast(t("sessionExpired"), "error"); return false; }
+    if (folder) rememberFolder(folder);
     updateImportProgress(0, files.length, files[0].name);
 
     for (let i = 0; i < files.length; i++) {
@@ -1930,6 +1935,50 @@ function normalizeFolderName(name) {
   return trimmed ? trimmed.slice(0, 80) : null;
 }
 
+function getCustomFolders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(CUSTOM_FOLDERS_KEY) || "[]");
+    return Array.isArray(list) ? list.map(normalizeFolderName).filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveCustomFolders(names) {
+  const unique = [...new Set((names || []).map(normalizeFolderName).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  localStorage.setItem(CUSTOM_FOLDERS_KEY, JSON.stringify(unique));
+  return unique;
+}
+
+function rememberFolder(name) {
+  const folder = normalizeFolderName(name);
+  if (!folder) return null;
+  const folders = getCustomFolders();
+  if (!folders.includes(folder)) saveCustomFolders([...folders, folder]);
+  return folder;
+}
+
+function forgetCustomFolder(name) {
+  const folder = normalizeFolderName(name);
+  if (!folder) return;
+  saveCustomFolders(getCustomFolders().filter(n => n !== folder));
+}
+
+async function createFolderFromPrompt() {
+  const name = normalizeFolderName(prompt("请输入文件夹名称"));
+  if (!name) return;
+  const existing = new Set(getVisibleFolderNames(await dbAll()));
+  if (existing.has(name)) {
+    toast("文件夹已存在", "info");
+    return;
+  }
+  rememberFolder(name);
+  currentFolder = null;
+  refreshFileList();
+  toast(`已创建文件夹「${name}」`, "success");
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch => ({
     "&": "&amp;",
@@ -1943,7 +1992,8 @@ function escapeHtml(value) {
 function getVisibleFolderNames(files) {
   const source = files || [];
   const visible = isAdmin ? source : source.filter(f => !f.isPrivate);
-  return [...new Set(visible.filter(f => f.folder).map(f => f.folder))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return [...new Set([...getCustomFolders(), ...visible.filter(f => f.folder).map(f => f.folder)])]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
 async function moveFileIdsToFolder(ids, targetFolder) {
@@ -1951,6 +2001,7 @@ async function moveFileIdsToFolder(ids, targetFolder) {
   const uniqueIds = [...new Set((ids || []).map(Number).filter(Boolean))];
   if (uniqueIds.length === 0) { toast("请先选择文件", "info"); return false; }
 
+  if (folder) rememberFolder(folder);
   const all = await dbAll();
   let moved = 0;
   for (const id of uniqueIds) {
@@ -2202,11 +2253,12 @@ async function extractFileById(id) {
 
     // Place extracted files into a new, uniquely-named folder
     const all = await dbAll();
-    const existingFolders = new Set(all.filter(x => x.folder).map(x => x.folder));
+    const existingFolders = new Set(getVisibleFolderNames(all));
     let baseName = f.name.replace(/\.[^.]+$/, "").replace(/[\\/]/g, "_") || "解压";
     let folder = baseName;
     let n = 2;
     while (existingFolders.has(folder)) { folder = `${baseName} (${n})`; n++; }
+    rememberFolder(folder);
 
     let added = 0;
     for (const e of entries) {
