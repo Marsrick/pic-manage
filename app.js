@@ -139,7 +139,7 @@ let currentFolder = null; // null = root; otherwise the folder name being viewed
 const CUSTOM_FOLDERS_KEY = "pm_custom_folders";
 
 const DB = "PicManageDB";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = "files";
 const CHUNK_STORE = "fileChunks";
 const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
@@ -175,6 +175,11 @@ function openDB() {
       if (!database.objectStoreNames.contains(CHUNK_STORE)) {
         const chunkStore = database.createObjectStore(CHUNK_STORE, { keyPath: "key" });
         chunkStore.createIndex("fileId", "fileId", { unique: false });
+      } else {
+        const chunkStore = e.target.transaction.objectStore(CHUNK_STORE);
+        if (!chunkStore.indexNames.contains("fileId")) {
+          chunkStore.createIndex("fileId", "fileId", { unique: false });
+        }
       }
     };
   });
@@ -194,7 +199,33 @@ async function dbPutChunk(fileId, index, data) {
     tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk put aborted"));
   });
 }
-function dbGetChunks(fileId) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const store = tx.objectStore(CHUNK_STORE); const idx = store.index("fileId"); const r = idx.getAll(IDBKeyRange.only(fileId)); r.onsuccess = () => res((r.result || []).sort((a, b) => a.index - b.index)); r.onerror = () => rej(r.error); }); }
+function dbGetChunks(fileId) {
+  const sortChunks = chunks => (chunks || []).sort((a, b) => a.index - b.index);
+  return new Promise((res, rej) => {
+    const tx = db.transaction(CHUNK_STORE, "readonly");
+    const store = tx.objectStore(CHUNK_STORE);
+    const fallbackToScan = () => {
+      const all = store.getAll();
+      all.onsuccess = () => res(sortChunks((all.result || []).filter(chunk => String(chunk.fileId) === String(fileId))));
+      all.onerror = () => rej(all.error);
+    };
+    try {
+      const idx = store.index("fileId");
+      const r = idx.getAll(IDBKeyRange.only(fileId));
+      r.onsuccess = () => {
+        const byIndex = sortChunks(r.result || []);
+        if (byIndex.length) res(byIndex);
+        else fallbackToScan();
+      };
+      r.onerror = event => {
+        event?.preventDefault?.();
+        fallbackToScan();
+      };
+    } catch (_) {
+      fallbackToScan();
+    }
+  });
+}
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
 async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
 function createChunkMissingError(fileId, expectedCount, chunks, missing) {
@@ -828,7 +859,8 @@ async function refreshFileList() {
   clearFileCoverUrls();
   try {
     const all = await dbAll();
-    const base = isAdmin ? all : all.filter(f => !f.isPrivate);
+    const base = isAdmin ? all : all.filter(isFileVisibleInPublicMode);
+    if (!isAdmin && currentFolder && isFolderPrivate(currentFolder)) currentFolder = null;
     updateCategoryCounts(base);
 
     const q = document.getElementById("searchInput").value.trim().toLowerCase();
@@ -884,12 +916,14 @@ function renderFolderRow(name, base) {
   const count = base.filter(f => f.folder === name).length;
   const hasPrivate = base.some(f => f.folder === name && f.isPrivate);
   const hasPublic = base.some(f => f.folder === name && !f.isPrivate);
+  const folderPrivate = isFolderPrivate(name);
+  const folderModeText = folderPrivate ? "私密文件夹" : "公开文件夹";
 
-  const privateBtn = (isAdmin && adminKey && hasPublic)
+  const privateBtn = (isAdmin && adminKey && (!folderPrivate || hasPublic))
     ? `<button class="file-action-btn folder-private-btn" title="移入私密空间"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></button>`
     : "";
 
-  const publicBtn = (isAdmin && adminKey && hasPrivate)
+  const publicBtn = (isAdmin && adminKey && (folderPrivate || hasPrivate))
     ? `<button class="file-action-btn folder-public-btn" title="设为公开"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></button>`
     : "";
 
@@ -898,7 +932,7 @@ function renderFolderRow(name, base) {
       <div class="file-icon-wrap folder"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
       <div class="file-info">
         <div class="file-name">${safeName}</div>
-        <div class="file-meta-row"><span class="file-size-text">${count} 项</span></div>
+        <div class="file-meta-row"><span class="file-size-text">${count} 项 · ${folderModeText}</span></div>
       </div>
       <div class="file-row-actions">
         ${privateBtn}
@@ -974,7 +1008,8 @@ function bindFolderEvents(area) {
       if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
       const all = await dbAll();
       const files = all.filter(x => x.folder === name && !x.isPrivate);
-      if (files.length === 0) { toast("没有需要加密的公开文件", "info"); return; }
+      setFolderPrivacy(name, true);
+      if (files.length === 0) { toast("文件夹已设为私密", "success"); refreshFileList(); return; }
 
       toast("正在加密...", "info");
       let count = 0;
@@ -995,6 +1030,7 @@ function bindFolderEvents(area) {
           console.error(err);
         }
       }
+      setFolderPrivacy(name, true);
       toast(`已成功加密 ${count} 个文件`, "success");
       refreshFileList();
     });
@@ -1007,7 +1043,8 @@ function bindFolderEvents(area) {
       if (!isAdmin || !adminKey) { toast(t("sessionExpired"), "error"); return; }
       const all = await dbAll();
       const files = all.filter(x => x.folder === name && x.isPrivate);
-      if (files.length === 0) { toast("没有需要解密的私密文件", "info"); return; }
+      setFolderPrivacy(name, false);
+      if (files.length === 0) { toast("文件夹已设为公开", "success"); refreshFileList(); return; }
 
       toast("正在解密并设为公开...", "info");
       let count = 0;
@@ -1024,6 +1061,7 @@ function bindFolderEvents(area) {
           console.error(err);
         }
       }
+      setFolderPrivacy(name, false);
       toast(`已成功公开 ${count} 个文件`, "success");
       refreshFileList();
     });
@@ -1965,40 +2003,102 @@ function normalizeFolderName(name) {
   return trimmed ? trimmed.slice(0, 80) : null;
 }
 
-function getCustomFolders() {
+function getCustomFolderRecords() {
   try {
     const list = JSON.parse(localStorage.getItem(CUSTOM_FOLDERS_KEY) || "[]");
-    return Array.isArray(list) ? list.map(normalizeFolderName).filter(Boolean) : [];
+    if (!Array.isArray(list)) return [];
+    const records = list.map(item => {
+      if (typeof item === "string") return { name: normalizeFolderName(item), isPrivate: false };
+      return { name: normalizeFolderName(item?.name), isPrivate: !!item?.isPrivate };
+    }).filter(r => r.name);
+    const byName = new Map();
+    records.forEach(record => {
+      const existing = byName.get(record.name);
+      byName.set(record.name, { name: record.name, isPrivate: !!(existing?.isPrivate || record.isPrivate) });
+    });
+    return [...byName.values()]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   } catch (_) {
     return [];
   }
 }
 
-function saveCustomFolders(names) {
-  const unique = [...new Set((names || []).map(normalizeFolderName).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+function saveCustomFolderRecords(records) {
+  const byName = new Map();
+  (records || []).forEach(record => {
+    const name = normalizeFolderName(record?.name || record);
+    if (!name) return;
+    const existing = byName.get(name);
+    byName.set(name, { name, isPrivate: !!(existing?.isPrivate || record?.isPrivate) });
+  });
+  const unique = [...byName.values()]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   localStorage.setItem(CUSTOM_FOLDERS_KEY, JSON.stringify(unique));
   return unique;
 }
 
-function rememberFolder(name) {
+function getCustomFolders(includePrivate = isAdmin) {
+  return getCustomFolderRecords()
+    .filter(record => includePrivate || !record.isPrivate)
+    .map(record => record.name);
+}
+
+function getCustomFolderRecord(name) {
   const folder = normalizeFolderName(name);
   if (!folder) return null;
-  const folders = getCustomFolders();
-  if (!folders.includes(folder)) saveCustomFolders([...folders, folder]);
+  return getCustomFolderRecords().find(record => record.name === folder) || null;
+}
+
+function saveCustomFolders(names) {
+  const existing = getCustomFolderRecords();
+  const existingByName = new Map(existing.map(record => [record.name, record]));
+  return saveCustomFolderRecords((names || []).map(name => {
+    const folder = normalizeFolderName(name);
+    const record = existingByName.get(folder);
+    return { name: folder, isPrivate: !!record?.isPrivate };
+  })).map(record => record.name);
+}
+
+function rememberFolder(name, options = {}) {
+  const folder = normalizeFolderName(name);
+  if (!folder) return null;
+  const records = getCustomFolderRecords();
+  const existing = records.find(record => record.name === folder);
+  if (existing) {
+    if (Object.prototype.hasOwnProperty.call(options, "isPrivate")) existing.isPrivate = !!options.isPrivate;
+    saveCustomFolderRecords(records);
+  } else {
+    records.push({ name: folder, isPrivate: !!options.isPrivate });
+    saveCustomFolderRecords(records);
+  }
   return folder;
 }
 
 function forgetCustomFolder(name) {
   const folder = normalizeFolderName(name);
   if (!folder) return;
-  saveCustomFolders(getCustomFolders().filter(n => n !== folder));
+  saveCustomFolderRecords(getCustomFolderRecords().filter(record => record.name !== folder));
+}
+
+function setFolderPrivacy(name, isPrivate) {
+  const folder = rememberFolder(name, { isPrivate });
+  return folder;
+}
+
+function isFolderPrivate(name) {
+  const folder = normalizeFolderName(name);
+  if (!folder) return false;
+  return !!getCustomFolderRecord(folder)?.isPrivate;
+}
+
+function isFileVisibleInPublicMode(file) {
+  return !!file && !file.isPrivate && !isFolderPrivate(file.folder);
 }
 
 async function createFolderFromPrompt() {
   const name = normalizeFolderName(prompt("请输入文件夹名称"));
   if (!name) return;
-  const existing = new Set(getVisibleFolderNames(await dbAll()));
+  const existing = new Set(getAllFolderNames(await dbAll()));
   if (existing.has(name)) {
     toast("文件夹已存在", "info");
     return;
@@ -2021,8 +2121,15 @@ function escapeHtml(value) {
 
 function getVisibleFolderNames(files) {
   const source = files || [];
-  const visible = isAdmin ? source : source.filter(f => !f.isPrivate);
-  return [...new Set([...getCustomFolders(), ...visible.filter(f => f.folder).map(f => f.folder)])]
+  const visible = isAdmin ? source : source.filter(isFileVisibleInPublicMode);
+  return [...new Set([...getCustomFolders(isAdmin), ...visible.filter(f => f.folder).map(f => f.folder)])]
+    .filter(name => isAdmin || !isFolderPrivate(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+function getAllFolderNames(files) {
+  const source = files || [];
+  return [...new Set([...getCustomFolders(true), ...source.filter(f => f.folder).map(f => f.folder)])]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
@@ -2283,7 +2390,7 @@ async function extractFileById(id) {
 
     // Place extracted files into a new, uniquely-named folder
     const all = await dbAll();
-    const existingFolders = new Set(getVisibleFolderNames(all));
+    const existingFolders = new Set(getAllFolderNames(all));
     let baseName = f.name.replace(/\.[^.]+$/, "").replace(/[\\/]/g, "_") || "解压";
     let folder = baseName;
     let n = 2;
@@ -2446,7 +2553,7 @@ async function openMoveDialog(ids) {
   if (moveDialogTargetIds.length === 0) { toast("请先选择文件", "info"); return; }
 
   const all = await dbAll();
-  const visibleFiles = isAdmin ? all : all.filter(f => !f.isPrivate);
+  const visibleFiles = isAdmin ? all : all.filter(isFileVisibleInPublicMode);
   const folders = getVisibleFolderNames(all);
   const list = document.getElementById("moveFolderList");
   const currentLabel = currentFolder ? `当前位置：${currentFolder}` : "当前位置：根目录";
