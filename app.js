@@ -252,6 +252,54 @@ function dbGetChunks(fileId) {
   });
 }
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
+function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(CHUNK_STORE, "readonly");
+    const store = tx.objectStore(CHUNK_STORE);
+    const chunks = new Array(Math.max(0, lastIndex - firstIndex + 1));
+    let failed = false;
+    for (let index = firstIndex; index <= lastIndex; index++) {
+      const request = store.get(chunkKey(fileId, index));
+      request.onsuccess = () => { chunks[index - firstIndex] = request.result || null; };
+      request.onerror = () => {
+        failed = true;
+        rej(request.error || new Error("IndexedDB chunk read failed"));
+      };
+    }
+    tx.oncomplete = () => { if (!failed) res(chunks); };
+    tx.onerror = () => { if (!failed) rej(tx.error || new Error("IndexedDB chunk batch read failed")); };
+    tx.onabort = () => { if (!failed) rej(tx.error || new Error("IndexedDB chunk batch read aborted")); };
+  });
+}
+async function dbReadStoredRange(file, start, end) {
+  if (!file?.isChunked || end <= start) return new Uint8Array(0);
+  const chunkSize = Number(file.chunkSize || IDB_CHUNK_BYTES);
+  const firstIndex = Math.floor(start / chunkSize);
+  const lastIndex = Math.floor((end - 1) / chunkSize);
+  const chunks = await dbGetChunkBatch(file.id, firstIndex, lastIndex);
+  const output = new Uint8Array(end - start);
+  let written = 0;
+
+  for (let index = firstIndex; index <= lastIndex; index++) {
+    const record = chunks[index - firstIndex];
+    if (!record?.data) throw createChunkMissingError(file.id, file.chunkCount, chunks.filter(Boolean), [index]);
+    let bytes;
+    if (record.data instanceof Blob) bytes = new Uint8Array(await record.data.arrayBuffer());
+    else if (record.data instanceof ArrayBuffer) bytes = new Uint8Array(record.data);
+    else if (ArrayBuffer.isView(record.data)) bytes = new Uint8Array(record.data.buffer, record.data.byteOffset, record.data.byteLength);
+    else throw new Error("Invalid IndexedDB chunk data");
+
+    const chunkStart = index * chunkSize;
+    const from = Math.max(0, start - chunkStart);
+    const to = Math.min(bytes.length, end - chunkStart);
+    if (to <= from) throw new Error("IndexedDB chunk is shorter than expected");
+    output.set(bytes.subarray(from, to), written);
+    written += to - from;
+  }
+
+  if (written !== output.length) throw new Error("IndexedDB range is incomplete");
+  return output;
+}
 async function dbDeleteChunks(fileId) {
   return new Promise((res, rej) => {
     const tx = db.transaction(CHUNK_STORE, "readwrite");
@@ -435,6 +483,38 @@ async function decryptBlob(blob, gesture, type = "") {
   }
 
   return new Blob(parts, { type });
+}
+
+async function probePrivateChunkedFileFormat(file, gesture, trustedFormat = null) {
+  if (!file?.isPrivate || !file.isChunked || !gesture) return null;
+  const header = await dbReadStoredRange(file, 0, 28);
+  if (header.length < 28 || !isChunkedEncryptedData(header)) return null;
+
+  const plainChunkSize = readUint32FromBytes(header, 24);
+  if (!plainChunkSize || plainChunkSize > 64 * 1024 * 1024) {
+    throw new Error("Invalid encrypted chunk size");
+  }
+  if (trustedFormat) {
+    return { fmt: trustedFormat, isText: false, encryptedRange: true };
+  }
+  const firstPlainSize = Math.min(Number(file.size || 0), plainChunkSize);
+  if (!firstPlainSize) return null;
+
+  const frame = await dbReadStoredRange(file, 28, 28 + firstPlainSize + 32);
+  if (frame.length < 32) throw new Error("Invalid encrypted chunk");
+  const iv = frame.slice(0, 12);
+  const encryptedLength = readUint32FromBytes(frame, 12);
+  if (encryptedLength !== firstPlainSize + 16 || 16 + encryptedLength > frame.length) {
+    throw new Error("Invalid encrypted chunk");
+  }
+
+  const key = await deriveKey(gesture, header.slice(8, 24));
+  const plaintext = new Uint8Array(await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    frame.slice(16, 16 + encryptedLength)
+  ));
+  return { ...probeBytesFormat(plaintext.subarray(0, 512)), encryptedRange: true };
 }
 
 async function encryptBuf(buf, gesture) {
@@ -2966,6 +3046,7 @@ async function openFileView(f) {
     let fmt = "unknown";
     let isText = false;
     let loadedBlob = false;
+    let rangeSource = null;
 
     const loadBlob = async () => {
       if (blob) return blob;
@@ -2981,22 +3062,32 @@ async function openFileView(f) {
     };
 
     if (f.isPrivate) {
-      blob = await loadBlob();
-      if (!blob) return;
-      ({ fmt, isText } = await probeBlobFormat(blob));
+      if (!adminKey) { toast(t("sessionExpired"), "error"); return; }
+      const trustedPrivateFormat = ["zip", "cbz"].includes(ext) ? "zip" : null;
+      const privateProbe = await probePrivateChunkedFileFormat(f, adminKey, trustedPrivateFormat);
+      if (privateProbe?.encryptedRange) {
+        ({ fmt, isText } = privateProbe);
+        if (typeof createRangeZipSource === "function") {
+          rangeSource = createRangeZipSource(f, adminKey);
+        }
+      } else {
+        blob = await loadBlob();
+        if (!blob) return;
+        ({ fmt, isText } = await probeBlobFormat(blob));
+      }
     } else {
       ({ fmt, isText } = await probeStoredFileFormat(f));
       if (f.data && f.size <= LARGE_PREVIEW_BYTES) blob = f.data;
+      if (typeof createRangeZipSource === "function") {
+        rangeSource = createRangeZipSource(f);
+      }
     }
 
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
-        if (fmt === "zip" && !f.isPrivate && typeof createRangeZipSource === "function") {
-          const rangeSource = createRangeZipSource(f);
-          if (rangeSource) {
-            openComicReader(rangeSource, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
-            return;
-          }
+        if (fmt === "zip" && rangeSource) {
+          openComicReader(rangeSource, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
+          return;
         }
         blob = await loadBlob();
         if (!blob) return;
