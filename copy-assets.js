@@ -6,6 +6,7 @@ const srcFiles = [
   'style.css',
   'app.js',
   'reader.js',
+  'range-zip-reader.js',
   'pwa.js',
   'pwa.webmanifest',
   'service-worker.js',

@@ -2097,8 +2097,12 @@ async function saveFileAs(isPrivate) {
 }
 
 async function dbGet(id, includeData = true) {
-  const all = await dbAll();
-  const f = all.find(x => x.id === id);
+  const f = await new Promise((res, rej) => {
+    const tx = db.transaction(STORE, "readonly");
+    const request = tx.objectStore(STORE).get(id);
+    request.onsuccess = () => res(request.result || null);
+    request.onerror = () => rej(request.error || new Error("IndexedDB file lookup failed"));
+  });
   return includeData ? ensureFileData(f) : f;
 }
 
@@ -2987,6 +2991,13 @@ async function openFileView(f) {
 
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
+        if (fmt === "zip" && !f.isPrivate && typeof createRangeZipSource === "function") {
+          const rangeSource = createRangeZipSource(f);
+          if (rangeSource) {
+            openComicReader(rangeSource, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
+            return;
+          }
+        }
         blob = await loadBlob();
         if (!blob) return;
         openComicReader(blob, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
