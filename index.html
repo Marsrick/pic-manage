@@ -98,6 +98,7 @@
   <div class="multi-select-bar" id="multiSelectBar" style="display:none">
     <span class="ms-info">已选 <span id="multiSelectCount">0</span> 项</span>
     <div class="ms-actions">
+      <button class="ms-btn" id="multiSelectAllBtn" onclick="toggleSelectAll()" aria-pressed="false">全选</button>
       <button class="ms-btn" onclick="moveSelected()">移动</button>
       <button class="ms-btn danger" onclick="deleteSelected()">删除</button>
       <button class="ms-btn primary" onclick="compressSelected()">压缩</button>

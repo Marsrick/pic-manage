@@ -119,6 +119,8 @@ let isSettingNormalGesture = false;
 let isStartupUnlock = false;
 let multiSelectMode = false;
 const multiSelectIds = new Set();
+let multiSelectSuppressClickUntil = 0;
+let deleteInProgress = false;
 let actionMenuTargetId = null;
 let moveDialogTargetIds = [];
 let touchMoveState = null;
@@ -139,7 +141,7 @@ let currentFolder = null; // null = root; otherwise the folder name being viewed
 const CUSTOM_FOLDERS_KEY = "pm_custom_folders";
 
 const DB = "PicManageDB";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = "files";
 const CHUNK_STORE = "fileChunks";
 const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
@@ -170,7 +172,13 @@ function openDB() {
     r.onupgradeneeded = e => {
       const database = e.target.result;
       if (!database.objectStoreNames.contains(STORE)) {
-        database.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
+        const fileStore = database.createObjectStore(STORE, { keyPath: "id", autoIncrement: true });
+        fileStore.createIndex("folder", "folder", { unique: false });
+      } else {
+        const fileStore = e.target.transaction.objectStore(STORE);
+        if (!fileStore.indexNames.contains("folder")) {
+          fileStore.createIndex("folder", "folder", { unique: false });
+        }
       }
       if (!database.objectStoreNames.contains(CHUNK_STORE)) {
         const chunkStore = database.createObjectStore(CHUNK_STORE, { keyPath: "key" });
@@ -187,8 +195,25 @@ function openDB() {
 
 function dbAddRaw(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); let id = null; const req = tx.objectStore(STORE).add(obj); req.onsuccess = () => { id = req.result; }; tx.oncomplete = () => res(id); tx.onerror = () => rej(tx.error || new Error("IndexedDB add failed")); tx.onabort = () => rej(tx.error || new Error("IndexedDB add aborted")); }); }
 function dbAll() { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readonly"); const r = tx.objectStore(STORE).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+function dbGetIdsByFolder(folder) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, "readonly");
+    const store = tx.objectStore(STORE);
+    try {
+      const req = store.index("folder").getAllKeys(IDBKeyRange.only(folder));
+      req.onsuccess = () => res((req.result || []).map(Number).filter(Number.isFinite));
+      req.onerror = () => rej(req.error || new Error("IndexedDB folder lookup failed"));
+    } catch (err) {
+      rej(err);
+    }
+  });
+}
 function dbPutRaw(obj) { return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).put(obj); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("IndexedDB put aborted")); }); }
 function chunkKey(fileId, index) { return String(fileId) + ":" + String(index); }
+function chunkKeyRange(fileId) {
+  const prefix = String(fileId) + ":";
+  return IDBKeyRange.bound(prefix, prefix + "\uffff");
+}
 async function dbPutChunk(fileId, index, data) {
   const payload = data instanceof Blob ? await data.arrayBuffer() : data;
   return new Promise((res, rej) => {
@@ -227,7 +252,15 @@ function dbGetChunks(fileId) {
   });
 }
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
-async function dbDeleteChunks(fileId) { const chunks = await dbGetChunks(fileId); for (const c of chunks) await new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readwrite"); tx.objectStore(CHUNK_STORE).delete(c.key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function dbDeleteChunks(fileId) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(CHUNK_STORE, "readwrite");
+    tx.objectStore(CHUNK_STORE).delete(chunkKeyRange(fileId));
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk delete failed"));
+    tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk delete aborted"));
+  });
+}
 function createChunkMissingError(fileId, expectedCount, chunks, missing) {
   const err = new Error("IndexedDB chunk missing");
   err.code = "IDB_CHUNK_MISSING";
@@ -293,7 +326,29 @@ async function dbAddChunked(obj) {
   }
 }
 function dbAdd(obj) { return (obj?.data instanceof Blob && obj.data.size > IDB_CHUNKED_BYTES) ? dbAddChunked(obj) : dbAddRaw(obj); }
-async function dbDel(id) { await dbDeleteChunks(id).catch(() => {}); return new Promise((res, rej) => { const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+function dbDeleteFiles(ids) {
+  const normalizedIds = [...new Set((ids || []).map(Number).filter(Number.isFinite))];
+  if (!normalizedIds.length) return Promise.resolve(0);
+
+  return new Promise((res, rej) => {
+    const tx = db.transaction([STORE, CHUNK_STORE], "readwrite");
+    const fileStore = tx.objectStore(STORE);
+    const chunkStore = tx.objectStore(CHUNK_STORE);
+
+    // File metadata and all of each file's chunks are removed atomically.
+    // Chunk keys are `${fileId}:${index}`, so one range request replaces
+    // hundreds or thousands of cursor.delete() operations for large files.
+    normalizedIds.forEach(id => {
+      fileStore.delete(id);
+      chunkStore.delete(chunkKeyRange(id));
+    });
+
+    tx.oncomplete = () => res(normalizedIds.length);
+    tx.onerror = () => rej(tx.error || new Error("IndexedDB file delete failed"));
+    tx.onabort = () => rej(tx.error || new Error("IndexedDB file delete aborted"));
+  });
+}
+function dbDel(id) { return dbDeleteFiles([id]); }
 
 /* ===== CRYPTO ===== */
 async function deriveKey(gesture, salt) {
@@ -898,6 +953,8 @@ async function refreshFileList() {
     if (filtered.length === 0) {
       area.innerHTML = (currentFolder !== null ? renderBackRow(currentFolder) : "") + emptyPlaceholderHtml();
       bindFolderEvents(area);
+      bindSwipeSelection(area);
+      updateMultiSelectToolbar();
       return;
     }
     area.innerHTML = html;
@@ -986,11 +1043,24 @@ function bindFolderEvents(area) {
       e.stopPropagation();
       const name = btn.closest(".folder-row").dataset.folder;
       if (!confirm(`删除文件夹「${name}」及其中所有文件？此操作无法恢复！`)) return;
-      const all = await dbAll();
-      for (const f of all.filter(x => x.folder === name)) await dbDel(f.id);
-      forgetCustomFolder(name);
-      toast(t("deleteOk"), "success");
-      refreshFileList();
+      if (deleteInProgress) return;
+      deleteInProgress = true;
+      btn.disabled = true;
+      try {
+        toast(`正在删除文件夹「${name}」...`, "info");
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const ids = await dbGetIdsByFolder(name);
+        await dbDeleteFiles(ids);
+        forgetCustomFolder(name);
+        toast(ids.length ? `已删除文件夹及其中 ${ids.length} 个文件` : "文件夹已删除", "success");
+        await refreshFileList();
+      } catch (err) {
+        console.error("[deleteFolder] error:", err);
+        toast("删除失败，请重试", "error");
+      } finally {
+        deleteInProgress = false;
+        btn.disabled = false;
+      }
     });
   });
   area.querySelectorAll(".folder-zip-btn").forEach(btn => {
@@ -1087,7 +1157,7 @@ function renderFileRow(f, showLock) {
   const selected = multiSelectIds.has(f.id) ? " selected" : "";
   const coverHtml = shouldRenderCover(f) ? `<img class="file-cover-thumb" alt="" src="${createFileCoverUrl(f.coverThumb)}">` : "";
   const checkboxHtml = multiSelectMode
-    ? `<div class="file-checkbox${multiSelectIds.has(f.id) ? " checked" : ""}"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg></div>`
+    ? `<div class="file-checkbox${multiSelectIds.has(f.id) ? " checked" : ""}" role="checkbox" aria-checked="${multiSelectIds.has(f.id)}"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg></div>`
     : "";
 
   return `
@@ -1129,6 +1199,7 @@ function bindFileRowEvents(area) {
     if (row.dataset.id === undefined) return; // skip folder/back rows
     row.addEventListener("click", async () => {
       if (touchMoveSuppressClick) { touchMoveSuppressClick = false; return; }
+      if (Date.now() < multiSelectSuppressClickUntil) return;
       const id = Number(row.dataset.id);
       if (multiSelectMode) {
         toggleSelection(id);
@@ -1155,6 +1226,64 @@ function bindFileRowEvents(area) {
     bindMouseMoveFile(row);
     bindTouchMoveFile(row);
   });
+  bindSwipeSelection(area);
+  updateMultiSelectToolbar();
+}
+
+function bindSwipeSelection(area) {
+  if (area._swipeSelectionBound) return;
+  area._swipeSelectionBound = true;
+  let state = null;
+
+  const rowAt = (x, y) => document.elementFromPoint(x, y)?.closest?.(".file-row[data-id]");
+  const applyRow = row => {
+    if (!state || !row) return;
+    const id = Number(row.dataset.id);
+    if (!Number.isFinite(id) || state.visited.has(id)) return;
+    state.visited.add(id);
+    setSelectionState(id, state.selecting);
+  };
+
+  area.addEventListener("touchstart", e => {
+    if (!multiSelectMode || e.touches.length !== 1) return;
+    const row = e.target.closest?.(".file-row[data-id]");
+    if (!row) return;
+    const touch = e.touches[0];
+    const rect = row.getBoundingClientRect();
+    // Swipe selection starts from the checkbox/left selection lane so the rest
+    // of the row remains available for ordinary list scrolling.
+    const inSelectionLane = !!e.target.closest?.(".file-checkbox") || touch.clientX <= rect.left + 68;
+    if (!inSelectionLane) return;
+    const id = Number(row.dataset.id);
+    state = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startRow: row,
+      selecting: !multiSelectIds.has(id),
+      moved: false,
+      visited: new Set()
+    };
+  }, { passive: true });
+
+  area.addEventListener("touchmove", e => {
+    if (!state || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    if (!state.moved) {
+      const distance = Math.hypot(touch.clientX - state.startX, touch.clientY - state.startY);
+      if (distance < 8) return;
+      state.moved = true;
+      applyRow(state.startRow);
+    }
+    e.preventDefault();
+    applyRow(rowAt(touch.clientX, touch.clientY));
+  }, { passive: false });
+
+  area.addEventListener("touchend", () => {
+    if (state?.moved) multiSelectSuppressClickUntil = Date.now() + 500;
+    state = null;
+  }, { passive: true });
+
+  area.addEventListener("touchcancel", () => { state = null; }, { passive: true });
 }
 
 function clearTouchMoveTarget() {
@@ -2265,9 +2394,19 @@ async function handleActionClick(act) {
     await moveFileToPublic(id);
   } else if (act === "delete") {
     if (confirm(t("confirmDel"))) {
-      await dbDel(id);
-      toast(t("deleteOk"), "success");
-      refreshFileList();
+      if (deleteInProgress) return;
+      deleteInProgress = true;
+      try {
+        await dbDel(id);
+        multiSelectIds.delete(id);
+        toast(t("deleteOk"), "success");
+        await refreshFileList();
+      } catch (err) {
+        console.error("[deleteFile] error:", err);
+        toast("删除失败，请重试", "error");
+      } finally {
+        deleteInProgress = false;
+      }
     }
   } else if (act === "extract") {
     extractFileById(id);
@@ -2513,11 +2652,59 @@ function toggleMultiSelect() {
   refreshFileList();
 }
 
+function getVisibleSelectableIds() {
+  return [...document.querySelectorAll("#fileListArea .file-row[data-id]")]
+    .map(row => Number(row.dataset.id))
+    .filter(Number.isFinite);
+}
+
+function updateMultiSelectToolbar() {
+  const count = document.getElementById("multiSelectCount");
+  if (count) count.textContent = String(multiSelectIds.size);
+
+  const selectAllBtn = document.getElementById("multiSelectAllBtn");
+  if (!selectAllBtn) return;
+  const visibleIds = getVisibleSelectableIds();
+  const allSelected = visibleIds.length > 0 && visibleIds.every(id => multiSelectIds.has(id));
+  selectAllBtn.textContent = allSelected ? "取消全选" : "全选";
+  selectAllBtn.disabled = visibleIds.length === 0;
+  selectAllBtn.setAttribute("aria-pressed", String(allSelected));
+}
+
+function setSelectionState(id, selected) {
+  if (!Number.isFinite(id)) return;
+  if (selected) multiSelectIds.add(id);
+  else multiSelectIds.delete(id);
+
+  const row = document.querySelector(`#fileListArea .file-row[data-id="${id}"]`);
+  if (row) {
+    row.classList.toggle("selected", selected);
+    const checkbox = row.querySelector(".file-checkbox");
+    checkbox?.classList.toggle("checked", selected);
+    checkbox?.setAttribute("aria-checked", String(selected));
+  }
+  updateMultiSelectToolbar();
+}
+
 function toggleSelection(id) {
-  if (multiSelectIds.has(id)) multiSelectIds.delete(id);
-  else multiSelectIds.add(id);
-  refreshFileList();
-  document.getElementById("multiSelectCount").textContent = String(multiSelectIds.size);
+  setSelectionState(id, !multiSelectIds.has(id));
+}
+
+function toggleSelectAll() {
+  const visibleIds = getVisibleSelectableIds();
+  if (!visibleIds.length) return;
+  const shouldSelect = !visibleIds.every(id => multiSelectIds.has(id));
+  visibleIds.forEach(id => {
+    if (shouldSelect) multiSelectIds.add(id);
+    else multiSelectIds.delete(id);
+  });
+  document.querySelectorAll("#fileListArea .file-row[data-id]").forEach(row => {
+    const selected = multiSelectIds.has(Number(row.dataset.id));
+    row.classList.toggle("selected", selected);
+    row.querySelector(".file-checkbox")?.classList.toggle("checked", selected);
+    row.querySelector(".file-checkbox")?.setAttribute("aria-checked", String(selected));
+  });
+  updateMultiSelectToolbar();
 }
 
 async function compressSelected() {
@@ -2531,20 +2718,25 @@ async function moveSelected() {
 }
 
 async function deleteSelected() {
-  if (multiSelectIds.size === 0) { toast("璇峰厛閫夋嫨鏂囦欢", "info"); return; }
-  if (!confirm(`纭鍒犻櫎閫変腑鐨?${multiSelectIds.size} 涓枃浠讹紵姝ゆ搷浣滄棤娉曟仮澶嶏紒`)) return;
+  if (multiSelectIds.size === 0) { toast("请先选择文件", "info"); return; }
+  if (!confirm(`确认删除选中的 ${multiSelectIds.size} 个文件？此操作无法恢复！`)) return;
+  if (deleteInProgress) return;
 
   const ids = [...multiSelectIds];
+  deleteInProgress = true;
+  const bar = document.getElementById("multiSelectBar");
+  bar?.classList.add("busy");
   try {
-    for (const id of ids) {
-      await dbDel(id);
-    }
-    toast(t("deleteOk"), "success");
+    await dbDeleteFiles(ids);
+    toast(`已删除 ${ids.length} 个文件`, "success");
     toggleMultiSelect();
   } catch (e) {
     console.error("[deleteSelected] error:", e);
-    toast("鍒犻櫎澶辫触", "error");
+    toast("删除失败，请重试", "error");
     refreshFileList();
+  } finally {
+    deleteInProgress = false;
+    bar?.classList.remove("busy");
   }
 }
 
