@@ -272,7 +272,14 @@ function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
   });
 }
 async function dbReadStoredRange(file, start, end) {
-  if (!file?.isChunked || end <= start) return new Uint8Array(0);
+  if (!file || end <= start) return new Uint8Array(0);
+  if (!file.isChunked) {
+    const source = file.data instanceof Blob ? file.data : new Blob([file.data || new Uint8Array(0)]);
+    const safeStart = Math.max(0, Math.floor(start));
+    const safeEnd = Math.min(source.size, Math.floor(end));
+    if (safeEnd <= safeStart) return new Uint8Array(0);
+    return new Uint8Array(await source.slice(safeStart, safeEnd).arrayBuffer());
+  }
   const chunkSize = Number(file.chunkSize || IDB_CHUNK_BYTES);
   const firstIndex = Math.floor(start / chunkSize);
   const lastIndex = Math.floor((end - 1) / chunkSize);
@@ -486,16 +493,48 @@ async function decryptBlob(blob, gesture, type = "") {
 }
 
 async function probePrivateChunkedFileFormat(file, gesture, trustedFormat = null) {
-  if (!file?.isPrivate || !file.isChunked || !gesture) return null;
+  if (!file?.isPrivate || !gesture) return null;
   const header = await dbReadStoredRange(file, 0, 28);
-  if (header.length < 28 || !isChunkedEncryptedData(header)) return null;
+  if (header.length < 28) return null;
+  if (!isChunkedEncryptedData(header)) {
+    const prefixLength = Math.min(Number(file.size || 0), 512);
+    if (!prefixLength) return null;
+    const rawKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(gesture),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const keyBits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: header.slice(0, 16), iterations: 100000, hash: "SHA-256" },
+      rawKey,
+      256
+    );
+    const ctrKey = await crypto.subtle.importKey("raw", keyBits, "AES-CTR", false, ["decrypt"]);
+    const counter = new Uint8Array(16);
+    counter.set(header.slice(16, 28), 0);
+    new DataView(counter.buffer).setUint32(12, 2, false);
+    const ciphertext = await dbReadStoredRange(file, 28, 28 + prefixLength);
+    const plaintext = new Uint8Array(await crypto.subtle.decrypt(
+      { name: "AES-CTR", counter, length: 32 },
+      ctrKey,
+      ciphertext
+    ));
+    const probe = probeBytesFormat(plaintext);
+    return {
+      ...probe,
+      encryptedRange: probe.fmt === "zip",
+      encryptionMode: "legacy"
+    };
+  }
 
   const plainChunkSize = readUint32FromBytes(header, 24);
   if (!plainChunkSize || plainChunkSize > 64 * 1024 * 1024) {
     throw new Error("Invalid encrypted chunk size");
   }
   if (trustedFormat) {
-    return { fmt: trustedFormat, isText: false, encryptedRange: true };
+    return { fmt: trustedFormat, isText: false, encryptedRange: true, encryptionMode: "framed" };
   }
   const firstPlainSize = Math.min(Number(file.size || 0), plainChunkSize);
   if (!firstPlainSize) return null;
@@ -514,7 +553,11 @@ async function probePrivateChunkedFileFormat(file, gesture, trustedFormat = null
     key,
     frame.slice(16, 16 + encryptedLength)
   ));
-  return { ...probeBytesFormat(plaintext.subarray(0, 512)), encryptedRange: true };
+  return {
+    ...probeBytesFormat(plaintext.subarray(0, 512)),
+    encryptedRange: true,
+    encryptionMode: "framed"
+  };
 }
 
 async function encryptBuf(buf, gesture) {
@@ -3068,7 +3111,7 @@ async function openFileView(f) {
       if (privateProbe?.encryptedRange) {
         ({ fmt, isText } = privateProbe);
         if (typeof createRangeZipSource === "function") {
-          rangeSource = createRangeZipSource(f, adminKey);
+          rangeSource = createRangeZipSource(f, adminKey, privateProbe.encryptionMode);
         }
       } else {
         blob = await loadBlob();

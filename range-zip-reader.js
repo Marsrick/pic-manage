@@ -7,10 +7,13 @@
   const RANGE_SOURCE_MARKER = "__pmRangeZipSource";
   const RANGE_PAGE_CACHE_RADIUS = 2;
 
-  window.createRangeZipSource = function createRangeZipSource(file, adminGesture = null) {
-    if (!file || (file.isPrivate && (!file.isChunked || !adminGesture))) return null;
+  window.createRangeZipSource = function createRangeZipSource(file, adminGesture = null, encryptionMode = null) {
+    if (!file || (file.isPrivate && (!adminGesture || (!file.isChunked && !(file.data instanceof Blob))))) return null;
     const encrypted = !!file.isPrivate;
     const chunkSize = Number(file.chunkSize || IDB_CHUNK_BYTES);
+    const storedSize = file.isChunked
+      ? Number(file.chunkCount || 0) * chunkSize
+      : Number(file.data?.size || 0);
     return {
       [RANGE_SOURCE_MARKER]: true,
       storage: file.isChunked ? "idb" : "blob",
@@ -21,10 +24,9 @@
       dbName: DB,
       chunkStore: CHUNK_STORE,
       chunkSize,
-      storageSize: encrypted
-        ? Number(file.chunkCount || 0) * chunkSize
-        : Number(file.size || file.data?.size || 0),
+      storageSize: encrypted ? storedSize : Number(file.size || file.data?.size || 0),
       encrypted,
+      encryptionMode: encrypted ? (encryptionMode || "framed") : null,
       adminGesture: encrypted ? adminGesture : null
     };
   };
@@ -41,6 +43,8 @@
       let pakoReady = false;
       let encryptionKey = null;
       let encryptionPlainChunkSize = 0;
+      let legacyCtrKey = null;
+      let legacyIv = null;
       const chunkCache = new Map();
       const plainChunkCache = new Map();
       const MAX_CACHE_CHUNKS = 8;
@@ -95,6 +99,25 @@
         if (ext === "svg") return "image/svg+xml";
         if (ext === "avif") return "image/avif";
         return "application/octet-stream";
+      }
+
+      let crcTable = null;
+      function crc32(bytes) {
+        if (!crcTable) {
+          crcTable = new Uint32Array(256);
+          for (let index = 0; index < 256; index++) {
+            let value = index;
+            for (let bit = 0; bit < 8; bit++) {
+              value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
+            }
+            crcTable[index] = value >>> 0;
+          }
+        }
+        let crc = 0xffffffff;
+        for (let index = 0; index < bytes.length; index++) {
+          crc = (crc >>> 8) ^ crcTable[(crc ^ bytes[index]) & 0xff];
+        }
+        return (crc ^ 0xffffffff) >>> 0;
       }
 
       function openDatabase() {
@@ -181,25 +204,39 @@
       async function initializeEncryption() {
         if (!source.encrypted) return;
         const header = await readStorageRange(0, 28);
-        if (header.length < 28 || !hasEncryptedMagic(header)) {
-          throw new Error("This private file does not support range decryption");
-        }
-        const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
-        encryptionPlainChunkSize = readU32(view, 24);
-        if (!encryptionPlainChunkSize || encryptionPlainChunkSize > 64 * 1024 * 1024) {
-          throw new Error("Invalid encrypted chunk size");
-        }
+        if (header.length < 28) throw new Error("Private file header is incomplete");
         const raw = new TextEncoder().encode(source.adminGesture || "");
-        const baseKey = await crypto.subtle.importKey("raw", raw, "PBKDF2", false, ["deriveKey"]);
-        encryptionKey = await crypto.subtle.deriveKey(
-          { name: "PBKDF2", salt: header.slice(8, 24), iterations: 100000, hash: "SHA-256" },
-          baseKey,
-          { name: "AES-GCM", length: 256 },
-          false,
-          ["decrypt"]
-        );
-        const frameCount = Math.ceil(source.size / encryptionPlainChunkSize);
-        source.storageSize = 28 + source.size + frameCount * 32;
+
+        if (source.encryptionMode === "legacy") {
+          const baseKey = await crypto.subtle.importKey("raw", raw, "PBKDF2", false, ["deriveBits"]);
+          const keyBits = await crypto.subtle.deriveBits(
+            { name: "PBKDF2", salt: header.slice(0, 16), iterations: 100000, hash: "SHA-256" },
+            baseKey,
+            256
+          );
+          legacyCtrKey = await crypto.subtle.importKey("raw", keyBits, "AES-CTR", false, ["decrypt"]);
+          legacyIv = header.slice(16, 28);
+          source.storageSize = source.size + 44;
+        } else {
+          if (!hasEncryptedMagic(header)) {
+            throw new Error("This private file does not support framed range decryption");
+          }
+          const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+          encryptionPlainChunkSize = readU32(view, 24);
+          if (!encryptionPlainChunkSize || encryptionPlainChunkSize > 64 * 1024 * 1024) {
+            throw new Error("Invalid encrypted chunk size");
+          }
+          const baseKey = await crypto.subtle.importKey("raw", raw, "PBKDF2", false, ["deriveKey"]);
+          encryptionKey = await crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt: header.slice(8, 24), iterations: 100000, hash: "SHA-256" },
+            baseKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["decrypt"]
+          );
+          const frameCount = Math.ceil(source.size / encryptionPlainChunkSize);
+          source.storageSize = 28 + source.size + frameCount * 32;
+        }
         source.adminGesture = "";
       }
 
@@ -253,10 +290,31 @@
         return output;
       }
 
+      async function readLegacyEncryptedRange(start, end) {
+        const safeStart = Math.max(0, Math.floor(start));
+        const safeEnd = Math.min(source.size, Math.floor(end));
+        if (safeEnd <= safeStart) return new Uint8Array(0);
+        const alignedStart = Math.floor(safeStart / 16) * 16;
+        const alignedEnd = Math.min(source.size, Math.ceil(safeEnd / 16) * 16);
+        const ciphertext = await readStorageRange(28 + alignedStart, 28 + alignedEnd);
+        const counter = new Uint8Array(16);
+        counter.set(legacyIv, 0);
+        const blockIndex = Math.floor(alignedStart / 16);
+        new DataView(counter.buffer).setUint32(12, (2 + blockIndex) >>> 0, false);
+        const plaintext = new Uint8Array(await crypto.subtle.decrypt(
+          { name: "AES-CTR", counter, length: 32 },
+          legacyCtrKey,
+          ciphertext
+        ));
+        const from = safeStart - alignedStart;
+        return plaintext.slice(from, from + safeEnd - safeStart);
+      }
+
       async function readRange(start, end) {
-        return source.encrypted
-          ? readEncryptedRange(start, end)
-          : readStorageRange(start, end);
+        if (!source.encrypted) return readStorageRange(start, end);
+        return source.encryptionMode === "legacy"
+          ? readLegacyEncryptedRange(start, end)
+          : readEncryptedRange(start, end);
       }
 
       function findEndOfCentralDirectory(tail) {
@@ -360,6 +418,7 @@
             name: decodeName(bytes.subarray(nameStart, extraStart)),
             flags,
             method,
+            crc32: readU32(view, cursor + 16),
             compressedSize: readU32(view, cursor + 20),
             uncompressedSize: readU32(view, cursor + 24),
             localOffset: readU32(view, cursor + 42)
@@ -401,6 +460,12 @@
             pakoReady = true;
           }
           output = self.pako.inflateRaw(compressed);
+        }
+        if (entry.uncompressedSize !== output.length) {
+          throw new Error("ZIP page size verification failed");
+        }
+        if (entry.crc32 && crc32(output) !== entry.crc32) {
+          throw new Error("ZIP page CRC verification failed");
         }
         return new Blob([output], { type: mimeForName(entry.name) });
       }
