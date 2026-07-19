@@ -19,7 +19,8 @@ let readerLazyWorker = null;
 let readerLazyPending = new Map();
 let readerLazyPageNames = [];
 let readerLazyMode = false;
-let readerLargeModeLocked = false;
+let readerMemoryMode = false;
+let readerImageObserver = null;
 const READER_LAZY_ZIP_BYTES = 16 * 1024 * 1024;
 const READER_HEAVY_MODE_PAGE_LIMIT = 80;
 const READER_HEAVY_MODE_BYTES = 48 * 1024 * 1024;
@@ -50,20 +51,58 @@ function setReaderImgSrc(img, idx) {
   img.src = url || READER_PLACEHOLDER_SRC;
 }
 
+function disconnectReaderImageObserver() {
+  if (readerImageObserver) readerImageObserver.disconnect();
+  readerImageObserver = null;
+}
+
+// Scroll modes may contain hundreds of page elements. In memory-saving mode,
+// observe them instead of decoding every image at once.
+function setReaderImgSrcDeferred(img, idx) {
+  if (!img) return;
+  if (!readerMemoryMode || typeof IntersectionObserver === "undefined") {
+    setReaderImgSrc(img, idx);
+    return;
+  }
+
+  img.dataset.readerIdx = String(idx);
+  img.src = READER_PLACEHOLDER_SRC;
+  if (!readerImageObserver) {
+    readerImageObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const pageIdx = Number(entry.target.dataset.readerIdx);
+        if (Number.isInteger(pageIdx)) setReaderImgSrc(entry.target, pageIdx);
+      });
+    }, { root: null, rootMargin: "160% 80%" });
+  }
+  readerImageObserver.observe(img);
+}
+
 function refreshReaderImages(idx) {
   const url = ensureReaderPageUrl(idx);
   if (!url) return;
   document.querySelectorAll(`img[data-reader-idx="${idx}"]`).forEach(img => {
     if (img.src !== url) img.src = url;
   });
+  const curlImg = curlImgCache.get(idx);
+  if (curlImg && curlImg._readerUrl !== url) curlImgCache.delete(idx);
+  if (rMode === "flip" && Math.abs(idx - rPageIdx) <= 1) {
+    getCurlImg(idx);
+    if (idx === rPageIdx && curlCanvas && !curlBusy) drawCurlStatic();
+  }
 }
 
 function revokeDistantReaderUrls(centerIdx) {
   for (let i = 0; i < readerPages.length; i++) {
-    if (readerPages[i] && Math.abs(i - centerIdx) > READER_URL_WINDOW) {
-      URL.revokeObjectURL(readerPages[i]);
-      readerPages[i] = null;
-    }
+    if (Math.abs(i - centerIdx) <= READER_URL_WINDOW) continue;
+    if (readerPages[i]) URL.revokeObjectURL(readerPages[i]);
+    readerPages[i] = null;
+    curlImgCache.delete(i);
+    if (readerLazyMode && !readerLazyPending.has(i)) readerImageBlobs[i] = null;
+    document.querySelectorAll(`img[data-reader-idx="${i}"]`).forEach((img) => {
+      if (img.src !== READER_PLACEHOLDER_SRC) img.src = READER_PLACEHOLDER_SRC;
+    });
   }
 }
 
@@ -74,6 +113,7 @@ function revokeAllReaderUrls() {
 }
 
 function stopReaderLazyWorker() {
+  disconnectReaderImageObserver();
   if (readerLazyWorker) {
     try { readerLazyWorker.terminate(); } catch (_) {}
   }
@@ -664,7 +704,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   revokeAllReaderUrls();
   readerPages = [];
   readerImageBlobs = [];
-  readerLargeModeLocked = false;
+  readerMemoryMode = false;
   initReaderGestures();
   document.getElementById("readerFileName").textContent = name;
   document.getElementById("readerPageIndicator").textContent = "...";
@@ -686,12 +726,11 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
     if (result.lazy) {
       readerImageBlobs = new Array(total).fill(null);
       readerPages = new Array(total).fill(null);
-      readerLargeModeLocked = true;
-      if (readerLargeModeLocked && rMode !== "click") rMode = "click";
+      readerMemoryMode = true;
 
       const firstBlob = await requestReaderPageBlob(0).catch(() => null);
       if (openSeq !== readerOpenSeq) return;
-      if (!readerLargeModeLocked && typeof onFirstImageLoaded === "function" && firstBlob) {
+      if (typeof onFirstImageLoaded === "function" && firstBlob) {
         Promise.resolve(onFirstImageLoaded(firstBlob)).catch(e => console.warn("[comic-cover] first page callback failed", e));
       }
     } else {
@@ -702,9 +741,8 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
       readerImageBlobs = images.map(img => img.data);
       readerPages = new Array(images.length).fill(null);
       const totalBytes = readerImageBlobs.reduce((sum, blob) => sum + (blob?.size || 0), 0);
-      readerLargeModeLocked = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES || totalBytes > READER_HEAVY_MODE_BYTES;
-      if (readerLargeModeLocked && rMode !== "click") rMode = "click";
-      if (!readerLargeModeLocked && typeof onFirstImageLoaded === "function") {
+      readerMemoryMode = images.length > READER_HEAVY_MODE_PAGE_LIMIT || (result.size || 0) > READER_HEAVY_MODE_BYTES || totalBytes > READER_HEAVY_MODE_BYTES;
+      if (typeof onFirstImageLoaded === "function") {
         Promise.resolve(onFirstImageLoaded(images[0].data)).catch(e => console.warn("[comic-cover] first page callback failed", e));
       }
     }
@@ -717,7 +755,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
     initReaderUI();
     renderPage();
-    toast(`${readerPages.length} ${t("parseOk")}${result.lazy ? " · 按需加载" : ""}${readerLargeModeLocked ? " · 省内存模式" : ""}`, "success");
+    toast(`${readerPages.length} ${t("parseOk")}${result.lazy ? " · 按需加载" : ""}${readerMemoryMode ? " · 省内存模式" : ""}`, "success");
   } catch (e) {
     console.error(e);
     if (openSeq === readerOpenSeq) {
@@ -730,6 +768,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 function closeReader() {
   readerOpenSeq++;
   stopAuto();
+  disconnectReaderImageObserver();
   stopReaderLazyWorker();
   destroyPageFlip();
   cancelAnimationFrame(pfRAF);
@@ -752,18 +791,12 @@ function initReaderUI() {
 
   modeSel.value = rMode;
   Array.from(modeSel.options).forEach(opt => {
-    opt.disabled = readerLargeModeLocked && opt.value !== "click";
+    opt.disabled = false;
   });
   speedSlider.value = rAutoSpeed;
   document.getElementById("rSpeedVal").textContent = rAutoSpeed;
 
   modeSel.onchange = () => {
-    if (readerLargeModeLocked && modeSel.value !== "click") {
-      modeSel.value = "click";
-      rMode = "click";
-      toast("大文件已启用省内存阅读模式", "info");
-      return;
-    }
     rMode = modeSel.value;
     stopAuto();
     renderPage();
@@ -839,6 +872,7 @@ async function preparePageFlipImages(width, height, initSeq) {
 function renderPage() {
   const container = document.getElementById("readerCanvas");
   destroyPageFlip();
+  disconnectReaderImageObserver();
   container.innerHTML = "";
 
   if (rMode === "click") {
@@ -867,7 +901,7 @@ function renderPage() {
     readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-h-page";
       const img = document.createElement("img"); img.loading = "lazy";
-      setReaderImgSrc(img, i);
+      setReaderImgSrcDeferred(img, i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -881,7 +915,7 @@ function renderPage() {
     readerPages.forEach((_, i) => {
       const pg = document.createElement("div"); pg.className = "r-v-page"; pg.id = `vp-${i}`;
       const img = document.createElement("img"); img.loading = "lazy";
-      setReaderImgSrc(img, i);
+      setReaderImgSrcDeferred(img, i);
       pg.appendChild(img); pg.onclick = () => toggleControls(); wrap.appendChild(pg);
     });
     container.appendChild(wrap);
@@ -897,11 +931,10 @@ function renderPage() {
     setTimeout(() => { const el = document.getElementById(`vp-${rPageIdx}`); if (el) wrap.scrollTop = el.offsetTop; }, 50);
   } else if (rMode === "flip") {
     readerImageZoomed = false;
-    const stage = document.createElement("div"); stage.className = "pageflip-stage tomato-flip-stage"; stage.id = "flipStage";
+    const stage = document.createElement("div"); stage.className = "pageflip-stage noxwing-flip-stage"; stage.id = "flipStage";
     const canvas = document.createElement("canvas");
     canvas.className = "flip-canvas";
     stage.appendChild(canvas);
-    stage.onclick = () => { if (!curlBusy) toggleControls(); };
     container.appendChild(stage);
     setTimeout(() => initCurl(stage, canvas), 30);
   }
@@ -1135,15 +1168,46 @@ function clampRange(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-function smoothstep(edge0, edge1, x) {
-  const t = clampRange((x - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
 function getCurlImg(idx) {
   if (idx < 0 || idx >= readerPages.length) return null;
+  const url = ensureReaderPageUrl(idx);
+  if (!url) return null;
   let im = curlImgCache.get(idx);
-  if (!im) { const url = ensureReaderPageUrl(idx); if (!url) return null; im = new Image(); im.src = url; curlImgCache.set(idx, im); }
+  if (im && im._readerUrl !== url) {
+    curlImgCache.delete(idx);
+    im = null;
+  }
+  if (!im) {
+    im = new Image();
+    im._readerUrl = url;
+    im.decoding = "async";
+    im.addEventListener("load", () => {
+      if (rMode === "flip" && idx === rPageIdx && curlCanvas && !curlBusy) drawCurlStatic();
+    });
+    im.src = url;
+    curlImgCache.set(idx, im);
+  }
+  return im;
+}
+
+async function waitForCurlImg(idx, timeoutMs = 2500) {
+  const blob = await requestReaderPageBlob(idx).catch(() => null);
+  if (!blob) return null;
+  const im = getCurlImg(idx);
+  if (!im || (im.complete && im.naturalWidth)) return im;
+
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    im.addEventListener("load", finish, { once: true });
+    im.addEventListener("error", finish, { once: true });
+  });
   return im;
 }
 
@@ -1165,8 +1229,10 @@ function initCurl(stage, canvas) {
 
 function resizeCurl() {
   if (!curlCanvas) return;
-  curlDpr = Math.min(1.85, window.devicePixelRatio || 1);
   const r = curlCanvas.getBoundingClientRect();
+  const cssPixels = Math.max(1, r.width * r.height);
+  const pixelBudgetDpr = Math.sqrt(2400000 / cssPixels);
+  curlDpr = Math.max(1, Math.min(1.75, window.devicePixelRatio || 1, pixelBudgetDpr));
   curlCW = Math.max(1, Math.round(r.width * curlDpr));
   curlCH = Math.max(1, Math.round(r.height * curlDpr));
   curlCanvas.width = curlCW; curlCanvas.height = curlCH;
@@ -1176,11 +1242,11 @@ function resizeCurl() {
   curlOffB.width = curlCW; curlOffB.height = curlCH;
 }
 
-// Draw page `idx` into an offscreen canvas, contain-fitted on white.
+// Draw page `idx` into an offscreen canvas without stretching its aspect ratio.
 function renderPageToOff(off, idx, cb) {
   const octx = off.getContext("2d");
   const paint = () => {
-    octx.fillStyle = "#fff";
+    octx.fillStyle = "#000";
     octx.fillRect(0, 0, curlCW, curlCH);
     const im = getCurlImg(idx);
     if (im && im.complete && im.naturalWidth) {
@@ -1192,7 +1258,7 @@ function renderPageToOff(off, idx, cb) {
     if (cb) cb();
   };
   const im = getCurlImg(idx);
-  if (im && !(im.complete && im.naturalWidth)) { im.onload = paint; }
+  if (im && !(im.complete && im.naturalWidth)) im.addEventListener("load", paint, { once: true });
   paint();
 }
 
@@ -1204,124 +1270,126 @@ function drawCurlStatic() {
   });
 }
 
-function creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX) {
-  ctx.moveTo(mapX(topFold), 0);
-  ctx.bezierCurveTo(
-    mapX(midFold + curve * 0.25), curlCH * 0.28,
-    mapX(midFold - curve * 0.38), curlCH * 0.72,
-    mapX(bottomFold), curlCH
-  );
-}
-
-function drawPaperBackCurl(foldX, topOff, botOff, touchYRatio = 0.72, curlTilt = 0, side = 1) {
+// Fluid full-page curl: the artwork keeps its scale while a narrow cylindrical
+// strip bends with the finger. The caller mirrors this geometry for prev-page
+// turns so both directions have the same weight and shadow behavior.
+function drawCurlFrameForward(foldX, topOff, botOff, touchYRatio = 0.5, curlTilt = 0) {
   const ctx = curlCtx;
   if (!ctx) return;
   foldX = clampRange(foldX, 0, curlCW);
-  touchYRatio = clampRange(touchYRatio || 0.72, 0.10, 0.90);
-  const progress = clampRange(1 - foldX / curlCW, 0, 1);
+
+  const progress = 1 - foldX / curlCW;
   const live = Math.sin(clampRange(progress, 0, 1) * Math.PI);
-  const dragEase = smoothstep(0, 1, progress);
-  const yAnchor = curlCH * touchYRatio;
-  const tilt = clampRange(curlTilt + (touchYRatio - 0.5) * 0.18, -0.34, 0.34) * (0.22 + live * 0.78);
-  const curve = curlCW * (0.020 + 0.022 * (1 - Math.abs(touchYRatio - 0.5) * 2)) * (0.5 + live * 0.5);
-  const creaseAt = (y, bias = 0) => foldX + tilt * (y - yAnchor) + bias;
-  const topFold = creaseAt(0, -curve * (0.42 + dragEase * 0.10));
-  const midFold = creaseAt(curlCH * 0.5, curve * (0.08 + dragEase * 0.08));
-  const bottomFold = creaseAt(curlCH, curve * (0.42 + dragEase * 0.12));
-  const outerTopX = curlCW - curve * 0.14;
-  const outerBottomX = curlCW - curve * 0.34;
-  const mapX = (x) => side > 0 ? x : curlCW - x;
-  const edgeX = side > 0 ? curlCW : 0;
-  const farX = side > 0 ? 0 : curlCW;
+  const touchBias = clampRange((touchYRatio - 0.5) * 0.20 + curlTilt * 0.12, -0.08, 0.08);
+  const curve = curlCW * (0.004 + live * 0.010);
+  const topFold = clampRange(foldX - curve * (0.25 + touchBias), 0, curlCW);
+  const midFold = clampRange(foldX + curve * 0.55, 0, curlCW);
+  const bottomFold = clampRange(foldX - curve * (0.25 - touchBias), 0, curlCW);
+  const available = Math.max(0, curlCW - Math.min(topFold, midFold, bottomFold));
+  const curlWidth = Math.min(available, curlCW * (0.025 + live * 0.17));
+  const edgeTop = clampRange(topFold + curlWidth * 0.80, 0, curlCW);
+  const edgeMid = clampRange(midFold + curlWidth, 0, curlCW);
+  const edgeBottom = clampRange(bottomFold + curlWidth * 0.80, 0, curlCW);
+
+  const traceCreaseCurve = () => {
+    ctx.bezierCurveTo(midFold, curlCH * 0.30, midFold, curlCH * 0.70, bottomFold, curlCH);
+  };
+  const traceOuterCurve = () => {
+    ctx.bezierCurveTo(edgeMid, curlCH * 0.70, edgeMid, curlCH * 0.30, edgeTop, 0);
+  };
 
   ctx.clearRect(0, 0, curlCW, curlCH);
   ctx.drawImage(botOff, 0, 0);
 
-  if (foldX > 0.5 || live > 0.01) {
+  // Next-page shadow sits directly under the moving cylinder.
+  const shadowWidth = Math.max(14 * curlDpr, curlCW * (0.045 + live * 0.075));
+  const shadow = ctx.createLinearGradient(foldX, 0, foldX + shadowWidth, 0);
+  shadow.addColorStop(0, `rgba(0,0,0,${0.24 + live * 0.18})`);
+  shadow.addColorStop(0.45, `rgba(0,0,0,${0.10 + live * 0.08})`);
+  shadow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = shadow;
+  ctx.fillRect(foldX, 0, shadowWidth, curlCH);
+
+  // Flat part of the turning page. Its content is clipped, never resized.
+  if (foldX > 0.5) {
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(farX, 0);
-    ctx.lineTo(mapX(topFold), 0);
-    creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
-    ctx.lineTo(farX, curlCH);
+    ctx.moveTo(0, 0);
+    ctx.lineTo(topFold, 0);
+    traceCreaseCurve();
+    ctx.lineTo(0, curlCH);
     ctx.closePath();
     ctx.clip();
     ctx.drawImage(topOff, 0, 0);
+
+    const faceShade = ctx.createLinearGradient(Math.max(0, foldX - shadowWidth), 0, foldX, 0);
+    faceShade.addColorStop(0, "rgba(0,0,0,0)");
+    faceShade.addColorStop(1, `rgba(0,0,0,${0.08 + live * 0.10})`);
+    ctx.fillStyle = faceShade;
+    ctx.fillRect(Math.max(0, foldX - shadowWidth), 0, shadowWidth, curlCH);
+    ctx.restore();
+  }
+
+  // Mirrored page content on the folded strip creates the cylindrical roll.
+  if (curlWidth > 0.5) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(topFold, 0);
+    traceCreaseCurve();
+    ctx.lineTo(edgeBottom, curlCH);
+    traceOuterCurve();
+    ctx.lineTo(topFold, 0);
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.translate(foldX * 2, 0);
+    ctx.scale(-1, 1);
+    ctx.globalAlpha = 0.72;
+    ctx.drawImage(topOff, 0, 0);
+    ctx.globalAlpha = 1;
+
+    const rollShade = ctx.createLinearGradient(foldX, 0, foldX + curlWidth, 0);
+    rollShade.addColorStop(0, "rgba(0,0,0,0.34)");
+    rollShade.addColorStop(0.22, "rgba(255,255,255,0.30)");
+    rollShade.addColorStop(0.58, "rgba(255,255,255,0.10)");
+    rollShade.addColorStop(1, "rgba(0,0,0,0.26)");
+    ctx.fillStyle = rollShade;
+    ctx.fillRect(foldX - 2, 0, curlWidth + 6, curlCH);
     ctx.restore();
   }
 
   ctx.save();
   ctx.beginPath();
-  creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
-  ctx.bezierCurveTo(
-    mapX(outerBottomX) + side * curlCW * 0.018, curlCH * 0.82,
-    edgeX, curlCH * 0.94,
-    edgeX, curlCH
-  );
-  ctx.lineTo(edgeX, 0);
-  ctx.bezierCurveTo(
-    edgeX, curlCH * 0.06,
-    mapX(outerTopX) + side * curlCW * 0.014, curlCH * 0.18,
-    mapX(topFold), 0
-  );
-  ctx.closePath();
-  ctx.clip();
-
-  ctx.fillStyle = "#f7f4e8";
-  ctx.fillRect(0, 0, curlCW, curlCH);
-
-  const paperGrad = ctx.createLinearGradient(mapX(foldX), 0, edgeX, 0);
-  paperGrad.addColorStop(0, `rgba(0,0,0,${0.18 + live * 0.12})`);
-  paperGrad.addColorStop(0.12, `rgba(255,255,255,${0.46 + live * 0.16})`);
-  paperGrad.addColorStop(0.55, "rgba(255,255,255,0.14)");
-  paperGrad.addColorStop(1, `rgba(0,0,0,${0.10 + live * 0.08})`);
-  ctx.fillStyle = paperGrad;
-  ctx.fillRect(Math.min(topFold, bottomFold) - 8, 0, curlCW, curlCH);
-
-  const grain = ctx.createLinearGradient(0, 0, curlCW, curlCH);
-  grain.addColorStop(0, "rgba(255,255,255,0.18)");
-  grain.addColorStop(0.5, "rgba(255,255,255,0)");
-  grain.addColorStop(1, "rgba(0,0,0,0.06)");
-  ctx.fillStyle = grain;
-  ctx.fillRect(0, 0, curlCW, curlCH);
+  ctx.moveTo(topFold, 0);
+  traceCreaseCurve();
+  ctx.lineWidth = Math.max(1, curlDpr * 1.15);
+  ctx.strokeStyle = `rgba(0,0,0,${0.18 + live * 0.16})`;
+  ctx.stroke();
   ctx.restore();
-
-  const shadowW = Math.max(18 * curlDpr, curlCW * (0.07 + live * 0.04));
-  const shadowStart = mapX(foldX);
-  const sg = ctx.createLinearGradient(shadowStart, 0, shadowStart + side * shadowW, 0);
-  sg.addColorStop(0, `rgba(0,0,0,${0.20 + live * 0.16})`);
-  sg.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = sg;
-  if (side > 0) ctx.fillRect(shadowStart, 0, shadowW, curlCH);
-  else ctx.fillRect(shadowStart - shadowW, 0, shadowW, curlCH);
-
-  if (foldX > 0.5 || live > 0.01) {
-    ctx.save();
-    ctx.beginPath();
-    creasePathMapped(ctx, topFold, midFold, bottomFold, curve, mapX);
-    ctx.lineWidth = Math.max(1.4, curlDpr * 1.55);
-    ctx.strokeStyle = `rgba(0,0,0,${0.12 + live * 0.13})`;
-    ctx.stroke();
-    ctx.lineWidth = Math.max(0.8, curlDpr * 0.95);
-    ctx.strokeStyle = `rgba(255,255,255,${0.28 + live * 0.20})`;
-    ctx.translate(side * Math.max(1, curlDpr * 1.4), 0);
-    ctx.stroke();
-    ctx.restore();
-  }
 }
 
-// One page-turn frame. The raised page is paper back only, not distorted comic
-// content. Prev-page turns are mirrored so the same geometry stays stable.
-function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.72, curlTilt = 0) {
+function drawCurlFrame(foldX, topOff, botOff, dir = 1, touchYRatio = 0.5, curlTilt = 0) {
+  const ctx = curlCtx;
+  if (!ctx) return;
+  const logicalFold = dir > 0 ? foldX : curlCW - foldX;
+
+  ctx.save();
   if (dir < 0) {
-    drawPaperBackCurl(curlCW - foldX, topOff, botOff, touchYRatio, -curlTilt, -1);
-    return;
+    ctx.translate(curlCW, 0);
+    ctx.scale(-1, 1);
   }
-  drawPaperBackCurl(foldX, topOff, botOff, touchYRatio, curlTilt, 1);
+  drawCurlFrameForward(
+    logicalFold,
+    topOff,
+    botOff,
+    touchYRatio,
+    dir > 0 ? curlTilt : -curlTilt
+  );
+  ctx.restore();
 }
 
 // Animate the crease from startFold to the end. dir:+1 next, -1 prev.
-function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
+async function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0, releaseVelocity = 0) {
   if (curlBusy) return;
   const next = rPageIdx + dir;
   if (next < 0 || next >= readerPages.length) {
@@ -1330,20 +1398,28 @@ function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
     return;
   }
   curlBusy = true;
-  const topIdx = dir > 0 ? rPageIdx : next;
-  const botIdx = dir > 0 ? next : rPageIdx;
+  const canvasAtStart = curlCanvas;
+  const topIdx = rPageIdx;
+  const botIdx = next;
   const fold0 = startFold != null ? startFold : (dir > 0 ? curlCW : 0);
   const fold1 = dir > 0 ? 0 : curlCW;
 
+  await Promise.all([waitForCurlImg(topIdx), waitForCurlImg(botIdx)]);
+  if (rMode !== "flip" || !curlCanvas || curlCanvas !== canvasAtStart || !curlCtx) {
+    curlBusy = false;
+    return;
+  }
   renderPageToOff(curlOffA, topIdx);
   renderPageToOff(curlOffB, botIdx);
   const dist = Math.abs(fold1 - fold0) / Math.max(1, curlCW);
-  const dur = Math.max(180, 430 * dist);
+  const velocityBoost = 1 + Math.min(1.4, Math.abs(releaseVelocity)) * 0.75;
+  const dur = clampRange(390 * dist / velocityBoost, 145, 390);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
     const p = Math.min(1, (now - t0) / dur);
-    const ease = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+    // Fast initial release and a soft settle feels closer to native novel readers.
+    const ease = 1 - Math.pow(1 - p, 3.35);
     const tension = 1 - Math.pow(1 - p, 2.2);
     drawCurlFrame(fold0 + (fold1 - fold0) * ease, curlOffA, curlOffB, dir, touchYRatio, curlTilt * (1 - tension * 0.45));
     if (p < 1) { curlRAF = requestAnimationFrame(tick); }
@@ -1360,13 +1436,13 @@ function animateCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
 // Roll the crease back to closed without changing the page.
 function cancelCurl(dir, startFold, touchYRatio = 0.72, curlTilt = 0) {
   curlBusy = true;
-  const topIdx = dir > 0 ? rPageIdx : rPageIdx + dir;
-  const botIdx = dir > 0 ? rPageIdx + dir : rPageIdx;
+  const topIdx = rPageIdx;
+  const botIdx = rPageIdx + dir;
   renderPageToOff(curlOffA, topIdx);
   renderPageToOff(curlOffB, botIdx);
   const fold1 = dir > 0 ? curlCW : 0;
   const dist = Math.abs(fold1 - startFold) / Math.max(1, curlCW);
-  const dur = Math.max(120, 210 * dist);
+  const dur = clampRange(205 * dist, 105, 205);
   const t0 = performance.now();
   cancelAnimationFrame(curlRAF);
   const tick = (now) => {
@@ -1383,7 +1459,10 @@ function flipNextPage() { if (!curlBusy) animateCurl(1); }
 function flipPrevPage() { if (!curlBusy) animateCurl(-1); }
 
 function attachCurlGestures(canvas) {
-  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0, touchYRatio = 0.72, curlTilt = 0, liveFold = 0;
+  let sx = 0, sy = 0, st = 0, moved = false, dir = 0, dragging = false, lastTap = 0;
+  let touchYRatio = 0.72, curlTilt = 0, liveFold = 0;
+  let lastX = 0, lastMoveAt = 0, swipeVelocity = 0;
+  let liveDrawRAF = null, pendingFrame = null;
 
   const tapZone = (clientX) => {
     const r = canvas.getBoundingClientRect();
@@ -1400,10 +1479,30 @@ function attachCurlGestures(canvas) {
       : Math.max(0, Math.min(curlCW, d));
   };
 
+  const scheduleLiveDraw = () => {
+    pendingFrame = { fold: liveFold, dir, touchYRatio, curlTilt };
+    if (liveDrawRAF) return;
+    liveDrawRAF = requestAnimationFrame(() => {
+      liveDrawRAF = null;
+      const frame = pendingFrame;
+      pendingFrame = null;
+      if (frame && dragging && moved) {
+        drawCurlFrame(frame.fold, curlOffA, curlOffB, frame.dir, frame.touchYRatio, frame.curlTilt);
+      }
+    });
+  };
+
+  const flushLiveDraw = () => {
+    if (liveDrawRAF) cancelAnimationFrame(liveDrawRAF);
+    liveDrawRAF = null;
+    pendingFrame = null;
+  };
+
   canvas.addEventListener("touchstart", (e) => {
     if (curlBusy || e.touches.length !== 1) { dragging = false; return; }
     const r = canvas.getBoundingClientRect();
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+    lastX = sx; lastMoveAt = performance.now(); swipeVelocity = 0;
     touchYRatio = clampRange((sy - r.top) / Math.max(1, r.height), 0.12, 0.88);
     moved = false; dir = 0; dragging = true; curlTilt = 0; liveFold = 0;
   }, { passive: true });
@@ -1412,36 +1511,62 @@ function attachCurlGestures(canvas) {
     if (!dragging || e.touches.length !== 1) return;
     const x = e.touches[0].clientX, y = e.touches[0].clientY;
     const dx = x - sx, dy = y - sy;
-    if (!moved && Math.abs(dx) > 4 && Math.abs(dx) > Math.abs(dy) * 0.82) {
+    if (!moved && Math.hypot(dx, dy) >= 7 && Math.abs(dy) > Math.abs(dx) * 1.12) {
+      dragging = false;
+      return;
+    }
+    if (!moved && Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy) * 0.90) {
       dir = dx < 0 ? 1 : -1;
       if (rPageIdx + dir < 0 || rPageIdx + dir >= readerPages.length) { dragging = false; return; }
       moved = true;
-      renderPageToOff(curlOffA, dir > 0 ? rPageIdx : rPageIdx + dir);
-      renderPageToOff(curlOffB, dir > 0 ? rPageIdx + dir : rPageIdx);
+      renderPageToOff(curlOffA, rPageIdx);
+      renderPageToOff(curlOffB, rPageIdx + dir);
     }
     if (moved && dir !== 0) {
       e.preventDefault();
+      const now = performance.now();
+      const moveDt = now - lastMoveAt;
+      if (moveDt > 0) {
+        const instantaneous = (x - lastX) / moveDt;
+        swipeVelocity = swipeVelocity * 0.58 + instantaneous * 0.42;
+      }
+      lastX = x;
+      lastMoveAt = now;
       const r = canvas.getBoundingClientRect();
       const liveTouchY = clampRange((y - r.top) / Math.max(1, r.height), 0.10, 0.90);
-      touchYRatio = touchYRatio * 0.6 + liveTouchY * 0.4;
+      touchYRatio = touchYRatio * 0.68 + liveTouchY * 0.32;
       const dragSlope = dy / Math.max(45, Math.abs(dx) * 0.95);
-      curlTilt = clampRange(dragSlope * 0.28, -0.30, 0.30);
+      curlTilt = clampRange(dragSlope * 0.24, -0.26, 0.26);
       liveFold = foldFromDelta(dx);
-      drawCurlFrame(liveFold, curlOffA, curlOffB, dir, touchYRatio, curlTilt);
+      scheduleLiveDraw();
     }
   }, { passive: false });
 
   canvas.addEventListener("touchend", (e) => {
     if (!dragging) return;
     dragging = false;
+    flushLiveDraw();
     const dt = Date.now() - st;
     if (!moved) { if (dt < 300) { lastTap = Date.now(); tapZone(sx); } return; }
+    lastTap = Date.now();
     const dx = e.changedTouches[0].clientX - sx;
     const fold = foldFromDelta(dx);
     const frac = fold / curlCW;
-    const flick = dt < 300 && Math.abs(dx) > 16;
-    if (dir > 0) { (flick || frac < 0.76) ? animateCurl(1, fold, touchYRatio, curlTilt) : cancelCurl(1, fold, touchYRatio, curlTilt); }
-    else { (flick || frac > 0.24) ? animateCurl(-1, fold, touchYRatio, curlTilt) : cancelCurl(-1, fold, touchYRatio, curlTilt); }
+    const progress = dir > 0 ? 1 - frac : frac;
+    const directionalVelocity = dir > 0 ? -swipeVelocity : swipeVelocity;
+    const cssWidth = Math.max(1, canvas.getBoundingClientRect().width);
+    const projectedProgress = progress + directionalVelocity * 165 / cssWidth;
+    const commit = progress >= 0.30 || (progress >= 0.08 && directionalVelocity > 0.32 && projectedProgress >= 0.20);
+    if (commit) animateCurl(dir, fold, touchYRatio, curlTilt, directionalVelocity);
+    else cancelCurl(dir, fold, touchYRatio, curlTilt);
+  }, { passive: true });
+
+  canvas.addEventListener("touchcancel", () => {
+    if (!dragging) return;
+    dragging = false;
+    flushLiveDraw();
+    if (moved && dir) cancelCurl(dir, liveFold, touchYRatio, curlTilt);
+    else drawCurlStatic();
   }, { passive: true });
 
   canvas.addEventListener("click", (e) => {
