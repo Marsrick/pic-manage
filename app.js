@@ -81,7 +81,7 @@ const T = {
     adminLogout: "Admin mode logged out",
     readerBack: "Back", chapterList: "Chapters", btnChapter: "Chapters",
     modeClick: "Tap Flip", modeFlip: "Page Flip", modeSlide: "Vertical Slide", modeWebtoon: "Webtoon Scroll",
-    autoPlay: "Auto Play", interval: "Speed",
+    autoPlay: "Auto Play", interval: "Interval",
     play: "Play", pause: "Pause", readerEnd: "Reached last page",
     decryptErr: "Decryption failed", fileTooLarge: "File too large (max 50MB)",
     parsingZip: "Parsing comic...", parseOk: " pages", parseErr: "Parse failed",
