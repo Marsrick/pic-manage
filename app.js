@@ -48,7 +48,16 @@ const T = {
     sortLabel: "排序", sortNewest: "时间：最新", sortOldest: "时间：最早",
     sortNameAsc: "名称：A-Z", sortNameDesc: "名称：Z-A",
     sortSizeDesc: "大小：从大到小", sortSizeAsc: "大小：从小到大",
-    importingFiles: "正在导入文件"
+    importingFiles: "正在导入文件",
+    backupTitle: "文件备份", backupDesc: "导出全部文件，或从文件列表勾选后导出；恢复不会覆盖现有文件",
+    backupExportAll: "导出全部", backupExportSelected: "导出", backupImport: "导入备份",
+    backupExportTitle: "导出文件备份", backupEncryptedMode: "加密备份",
+    backupEncryptedDesc: "生成 .pmbak 密文，仅本程序可用密码恢复",
+    backupPlainMode: "普通 ZIP", backupPlainDesc: "保留原文件格式，任意解压程序都可打开",
+    backupPassword: "设置备份密码（至少 6 位）", backupPasswordConfirm: "再次输入备份密码",
+    backupPasswordTip: "密码不会被保存，忘记后无法恢复加密备份", backupFileName: "备份文件名称",
+    backupStartExport: "开始导出", backupPasswordTitle: "输入备份密码",
+    backupPasswordInput: "备份密码", backupStartImport: "开始恢复"
   },
   en: {
     myFiles: "My Files", adminSpace: "Admin Space", adminMode: "Admin",
@@ -98,7 +107,16 @@ const T = {
     sortLabel: "Sort", sortNewest: "Date: Newest", sortOldest: "Date: Oldest",
     sortNameAsc: "Name: A-Z", sortNameDesc: "Name: Z-A",
     sortSizeDesc: "Size: Largest", sortSizeAsc: "Size: Smallest",
-    importingFiles: "Importing files"
+    importingFiles: "Importing files",
+    backupTitle: "File Backup", backupDesc: "Export everything or selected files. Restore keeps existing files intact.",
+    backupExportAll: "Export All", backupExportSelected: "Export", backupImport: "Import Backup",
+    backupExportTitle: "Export Backup", backupEncryptedMode: "Encrypted Backup",
+    backupEncryptedDesc: "Creates a password-protected .pmbak readable by this app",
+    backupPlainMode: "Standard ZIP", backupPlainDesc: "Keeps original formats and opens in any ZIP utility",
+    backupPassword: "Backup password (at least 6 characters)", backupPasswordConfirm: "Confirm backup password",
+    backupPasswordTip: "The password is not stored and cannot be recovered", backupFileName: "Backup file name",
+    backupStartExport: "Export", backupPasswordTitle: "Enter Backup Password",
+    backupPasswordInput: "Backup password", backupStartImport: "Restore"
   }
 };
 
@@ -146,6 +164,8 @@ const STORE = "files";
 const CHUNK_STORE = "fileChunks";
 const IDB_CHUNKED_BYTES = 32 * 1024 * 1024;
 const IDB_CHUNK_BYTES = 1024 * 1024;
+const IDB_WRITE_BATCH_CHUNKS = 8;
+const LARGE_IMPORT_BYTES = 500 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 
 /* ===== I18N UTILS ===== */
@@ -215,14 +235,44 @@ function chunkKeyRange(fileId) {
   return IDBKeyRange.bound(prefix, prefix + "\uffff");
 }
 async function dbPutChunk(fileId, index, data) {
-  const payload = data instanceof Blob ? await data.arrayBuffer() : data;
+  return dbPutChunkBatch(fileId, index, [data]);
+}
+async function dbPutChunkBatch(fileId, firstIndex, parts) {
+  const payloads = await Promise.all(parts.map(async part => {
+    if (part instanceof Blob) return part.arrayBuffer();
+    if (part instanceof ArrayBuffer) return part;
+    if (ArrayBuffer.isView(part)) {
+      if (part.byteOffset === 0 && part.byteLength === part.buffer.byteLength) return part.buffer;
+      return part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength);
+    }
+    return new Uint8Array(part || []).buffer;
+  }));
   return new Promise((res, rej) => {
     const tx = db.transaction(CHUNK_STORE, "readwrite");
-    tx.objectStore(CHUNK_STORE).put({ key: chunkKey(fileId, index), fileId, index, data: payload });
+    const store = tx.objectStore(CHUNK_STORE);
+    payloads.forEach((payload, offset) => {
+      const index = firstIndex + offset;
+      store.put({ key: chunkKey(fileId, index), fileId, index, data: payload });
+    });
     tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk put failed"));
-    tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk put aborted"));
+    tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk batch put failed"));
+    tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk batch put aborted"));
   });
+}
+async function dbWriteBlobChunks(fileId, data, onProgress = null) {
+  const chunkCount = Math.ceil(data.size / IDB_CHUNK_BYTES);
+  for (let firstIndex = 0; firstIndex < chunkCount; firstIndex += IDB_WRITE_BATCH_CHUNKS) {
+    const lastIndex = Math.min(chunkCount, firstIndex + IDB_WRITE_BATCH_CHUNKS);
+    const parts = [];
+    for (let index = firstIndex; index < lastIndex; index++) {
+      const start = index * IDB_CHUNK_BYTES;
+      parts.push(data.slice(start, Math.min(start + IDB_CHUNK_BYTES, data.size)));
+    }
+    await dbPutChunkBatch(fileId, firstIndex, parts);
+    onProgress?.(lastIndex / chunkCount);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return chunkCount;
 }
 function dbGetChunks(fileId) {
   const sortChunks = chunks => (chunks || []).sort((a, b) => a.index - b.index);
@@ -361,7 +411,7 @@ async function dbBlobFromChunks(fileId, expectedCount, expectedSize = null) {
   return new Blob(parts);
 }
 async function ensureFileData(f) { if (!f || f.data || !f.isChunked) return f; return { ...f, data: await dbBlobFromChunks(f.id, f.chunkCount, f.isPrivate ? null : f.size) }; }
-async function dbAddChunked(obj) {
+async function dbAddChunked(obj, onProgress = null) {
   const data = obj.data;
   const chunkCount = Math.ceil(data.size / IDB_CHUNK_BYTES);
   const meta = { ...obj, data: undefined, isChunked: true, chunkSize: IDB_CHUNK_BYTES, chunkCount };
@@ -369,18 +419,18 @@ async function dbAddChunked(obj) {
   let id = null;
   try {
     id = await dbAddRaw(meta);
-    for (let index = 0; index < chunkCount; index++) {
-      const start = index * IDB_CHUNK_BYTES;
-      await dbPutChunk(id, index, data.slice(start, Math.min(start + IDB_CHUNK_BYTES, data.size)));
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
+    await dbWriteBlobChunks(id, data, onProgress);
     return id;
   } catch (e) {
     if (id) await dbDel(id).catch(() => {});
     throw e;
   }
 }
-function dbAdd(obj) { return (obj?.data instanceof Blob && obj.data.size > IDB_CHUNKED_BYTES) ? dbAddChunked(obj) : dbAddRaw(obj); }
+function dbAdd(obj, options = {}) {
+  return (obj?.data instanceof Blob && obj.data.size > IDB_CHUNKED_BYTES)
+    ? dbAddChunked(obj, options.onProgress)
+    : dbAddRaw(obj);
+}
 function dbDeleteFiles(ids) {
   const normalizedIds = [...new Set((ids || []).map(Number).filter(Number.isFinite))];
   if (!normalizedIds.length) return Promise.resolve(0);
@@ -442,6 +492,91 @@ async function encryptBlobChunked(blob, gesture) {
     await new Promise(resolve => setTimeout(resolve, 0));
   }
   return new Blob(parts);
+}
+
+async function dbAddPrivateChunked(obj, sourceBlob, gesture, onProgress = null) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(gesture, salt);
+  const encryptedFrameCount = Math.ceil(sourceBlob.size / PRIVATE_ENCRYPT_CHUNK_BYTES);
+  const encryptedSize = 28 + sourceBlob.size + encryptedFrameCount * 32;
+  const chunkCount = Math.ceil(encryptedSize / IDB_CHUNK_BYTES);
+  const meta = {
+    ...obj,
+    data: undefined,
+    isChunked: true,
+    chunkSize: IDB_CHUNK_BYTES,
+    chunkCount
+  };
+  delete meta.data;
+
+  let id = null;
+  let outputIndex = 0;
+  let outputBuffer = new Uint8Array(IDB_CHUNK_BYTES);
+  let outputLength = 0;
+  let writeBatch = [];
+
+  const flushBatch = async () => {
+    if (!writeBatch.length) return;
+    const firstIndex = outputIndex - writeBatch.length;
+    const batch = writeBatch;
+    writeBatch = [];
+    await dbPutChunkBatch(id, firstIndex, batch);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+
+  const queueOutputChunk = async bytes => {
+    writeBatch.push(bytes);
+    outputIndex++;
+    if (writeBatch.length >= IDB_WRITE_BATCH_CHUNKS) await flushBatch();
+  };
+
+  const appendOutput = async bytes => {
+    const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let offset = 0;
+    while (offset < source.byteLength) {
+      const length = Math.min(IDB_CHUNK_BYTES - outputLength, source.byteLength - offset);
+      outputBuffer.set(source.subarray(offset, offset + length), outputLength);
+      outputLength += length;
+      offset += length;
+      if (outputLength === IDB_CHUNK_BYTES) {
+        const completed = outputBuffer;
+        outputBuffer = new Uint8Array(IDB_CHUNK_BYTES);
+        outputLength = 0;
+        await queueOutputChunk(completed);
+      }
+    }
+  };
+
+  try {
+    id = await dbAddRaw(meta);
+    await appendOutput(CHUNKED_ENC_MAGIC);
+    await appendOutput(salt);
+    await appendOutput(uint32BytesLE(PRIVATE_ENCRYPT_CHUNK_BYTES));
+
+    for (let offset = 0; offset < sourceBlob.size; offset += PRIVATE_ENCRYPT_CHUNK_BYTES) {
+      const end = Math.min(sourceBlob.size, offset + PRIVATE_ENCRYPT_CHUNK_BYTES);
+      const plain = await sourceBlob.slice(offset, end).arrayBuffer();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
+      await appendOutput(iv);
+      await appendOutput(uint32BytesLE(ciphertext.byteLength));
+      await appendOutput(new Uint8Array(ciphertext));
+      onProgress?.(end / sourceBlob.size);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    if (outputLength) {
+      await queueOutputChunk(outputBuffer.slice(0, outputLength));
+      outputLength = 0;
+    }
+    await flushBatch();
+    if (outputIndex !== chunkCount) throw new Error("Encrypted IndexedDB chunk count mismatch");
+    onProgress?.(1);
+    return id;
+  } catch (error) {
+    if (id) await dbDel(id).catch(() => {});
+    throw error;
+  }
 }
 
 async function decryptChunkedBuf(v, gesture) {
@@ -2095,13 +2230,66 @@ function initUpload() {
   }
 }
 
-function prepUpload(files) {
+async function prepareImportStorage(files) {
+  const totalBytes = files.reduce((sum, file) => sum + Number(file?.size || 0), 0);
+  if (totalBytes < LARGE_IMPORT_BYTES) return true;
+
+  try {
+    if (navigator.storage?.persist) {
+      const persisted = await navigator.storage.persisted?.();
+      if (!persisted) {
+        const granted = await navigator.storage.persist();
+        if (!granted) console.warn("[large-import] persistent storage was not granted");
+      }
+    }
+  } catch (error) {
+    console.warn("[large-import] persistent storage request failed", error);
+  }
+
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    const quota = Number(estimate?.quota);
+    const usage = Number(estimate?.usage);
+    if (Number.isFinite(quota) && Number.isFinite(usage)) {
+      const available = Math.max(0, quota - usage);
+      const encryptedFrameOverhead = files.reduce((sum, file) => (
+        sum + Math.ceil(Number(file?.size || 0) / PRIVATE_ENCRYPT_CHUNK_BYTES) * 32 + 28
+      ), 0);
+      const minimumRequired = totalBytes + encryptedFrameOverhead;
+      if (available < minimumRequired) {
+        toast(`设备存储空间不足：导入至少需要 ${fmtSize(minimumRequired)}，当前约可用 ${fmtSize(available)}`, "error");
+        return false;
+      }
+    }
+  } catch (error) {
+    console.warn("[large-import] storage estimate failed", error);
+  }
+
+  toast(`准备导入 ${fmtSize(totalBytes)}，请保持应用在前台`, "info");
+  return true;
+}
+
+function formatImportError(error) {
+  const name = String(error?.name || "Error");
+  const message = String(error?.message || error || "未知错误");
+  if (name === "QuotaExceededError" || /quota|storage|disk|space|容量|空间/i.test(message)) {
+    return "设备存储空间不足，请清理空间后重试";
+  }
+  if (name === "AbortError" || /abort/i.test(message)) return "存储写入被中断，请保持应用在前台后重试";
+  return `${name}: ${message}`;
+}
+
+async function prepUpload(files) {
   const isFileList = typeof FileList !== "undefined" && files instanceof FileList;
   const selected = Array.from(isFileList || Array.isArray(files) ? files : [files]);
-  const valid = selected.filter(file => file && file.size <= 500 * 1024 * 1024);
+  const valid = selected.filter(file => file && Number.isFinite(Number(file.size)) && typeof file.slice === "function");
   const skipped = selected.length - valid.length;
-  if (skipped) toast(`${skipped} 个文件超过 500MB，已跳过`, "error");
-  if (!valid.length) return Promise.resolve(false);
+  if (skipped) toast(`${skipped} 个无效文件已跳过`, "error");
+  if (!valid.length) return false;
+  if (!await prepareImportStorage(valid)) {
+    document.getElementById("fileInput").value = "";
+    return false;
+  }
 
   pendingFiles = valid;
   pendingFile = valid[0];
@@ -2111,7 +2299,7 @@ function prepUpload(files) {
       ? `为选中的 ${valid.length} 个文件选择统一存储方式`
       : "选择该文件的存储方式";
     document.getElementById("choiceDialog").classList.add("active");
-    return Promise.resolve(false);
+    return false;
   } else {
     // Normal user: directly upload to public storage, skip encryption dialog
     return saveFileAs(false);
@@ -2126,12 +2314,24 @@ function cancelUpload() {
   document.getElementById("fileInput").value = "";
 }
 
-function updateImportProgress(done, total, fileName) {
+function updateImportProgress(done, total, fileName, countText = "") {
   const progress = document.getElementById("importProgress");
+  const safeDone = Math.max(0, Math.min(Number(done) || 0, Number(total) || 0));
   progress?.classList.add("active");
-  document.getElementById("importProgressCount").textContent = `${done} / ${total}`;
-  document.getElementById("importProgressBar").style.width = `${total ? (done / total) * 100 : 0}%`;
+  document.getElementById("importProgressCount").textContent = countText || `${Math.floor(safeDone)} / ${total}`;
+  document.getElementById("importProgressBar").style.width = `${total ? (safeDone / total) * 100 : 0}%`;
   document.getElementById("importProgressFile").textContent = fileName || "";
+}
+
+function updateFileImportProgress(fileIndex, total, ratio, fileName, phase) {
+  const safeRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+  const percent = Math.round(safeRatio * 100);
+  updateImportProgress(
+    fileIndex + safeRatio,
+    total,
+    fileName,
+    `${fileIndex + 1} / ${total} · ${phase} ${percent}%`
+  );
 }
 
 function hideImportProgress() {
@@ -2139,7 +2339,7 @@ function hideImportProgress() {
 }
 
 function scheduleImportedCover(id, name, sourceBlob) {
-  if (!id || !sourceBlob) return;
+  if (!id || !sourceBlob || sourceBlob.size > MAX_AUTO_COVER_BYTES) return;
   const run = async () => {
     try {
       const thumb = await makeComicCoverThumb(name, sourceBlob);
@@ -2173,7 +2373,7 @@ async function saveFileAs(isPrivate) {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      updateImportProgress(i, files.length, file.name);
+      updateFileImportProgress(i, files.length, 0, file.name, isPrivate ? "正在加密并写入" : "正在写入");
       try {
         const sourceBlob = file instanceof Blob
           ? file
@@ -2181,23 +2381,29 @@ async function saveFileAs(isPrivate) {
         const uploadedAt = Date.now() + i;
         const record = { name: file.name, size: file.size, type: file.type, isPrivate, uploadedAt, folder };
 
-        if (isPrivate) {
-          if (sourceBlob.size > PRIVATE_CHUNKED_ENCRYPT_BYTES) {
-            record.data = await encryptBlobChunked(sourceBlob, adminKey);
-          } else {
+        let addedId;
+        if (isPrivate && sourceBlob.size > PRIVATE_CHUNKED_ENCRYPT_BYTES) {
+          addedId = await dbAddPrivateChunked(record, sourceBlob, adminKey, ratio => {
+            updateFileImportProgress(i, files.length, ratio, file.name, "正在加密并写入");
+          });
+        } else {
+          if (isPrivate) {
             const buf = await sourceBlob.arrayBuffer();
             const enc = await encryptBuf(buf, adminKey);
             record.data = new Blob([enc]);
+          } else {
+            record.data = sourceBlob;
           }
-        } else {
-          record.data = sourceBlob;
+          addedId = await dbAdd(record, {
+            onProgress: ratio => updateFileImportProgress(i, files.length, ratio, file.name, "正在写入")
+          });
         }
-        const addedId = await dbAdd(record);
+        updateFileImportProgress(i, files.length, 1, file.name, "写入完成");
         scheduleImportedCover(addedId, file.name, sourceBlob);
         succeeded++;
       } catch (error) {
         console.error("[batch-upload]", file.name, error);
-        failed.push(`${file.name}: ${error?.name || "Error"} ${error?.message || error}`);
+        failed.push(`${file.name}: ${formatImportError(error)}`);
       }
     }
 
@@ -2238,11 +2444,7 @@ async function dbPut(obj) {
     const meta = { ...obj, data: undefined, isChunked: true, chunkSize: IDB_CHUNK_BYTES, chunkCount };
     delete meta.data;
     await dbPutRaw(meta);
-    for (let index = 0; index < chunkCount; index++) {
-      const start = index * IDB_CHUNK_BYTES;
-      await dbPutChunk(obj.id, index, data.slice(start, Math.min(start + IDB_CHUNK_BYTES, data.size)));
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
+    await dbWriteBlobChunks(obj.id, data);
     return;
   }
   if (obj.data instanceof Blob && obj.isChunked) {

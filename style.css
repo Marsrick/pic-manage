@@ -1919,6 +1919,144 @@ body.file-touch-moving {
   gap: 12px;
 }
 
+/* ===== BACKUP / RESTORE ===== */
+.settings-card {
+  width: min(92%, 390px);
+  max-width: 390px;
+  max-height: min(88vh, 720px);
+  overflow-y: auto;
+}
+
+.settings-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 2px 0 0;
+}
+
+.settings-section-title {
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.backup-settings-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.backup-settings-btn {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: rgba(15,23,42,0.04);
+  color: var(--text-primary);
+  font: 600 0.78rem var(--font-family);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.backup-settings-btn.primary {
+  border-color: rgba(59,130,246,0.35);
+  background: rgba(59,130,246,0.1);
+  color: var(--accent-blue);
+}
+
+.backup-settings-btn svg { width: 17px; height: 17px; }
+
+.backup-dialog-card {
+  width: min(92%, 390px);
+  max-width: 390px;
+  max-height: min(92vh, 760px);
+  overflow-y: auto;
+  gap: 12px;
+  text-align: left;
+}
+
+.backup-dialog-card > h3,
+.backup-dialog-card > p { text-align: center; }
+
+.backup-summary {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(59,130,246,0.08);
+  color: var(--text-secondary) !important;
+}
+
+.backup-mode-option {
+  display: grid;
+  grid-template-columns: 0 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: rgba(15,23,42,0.025);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.backup-mode-option.active {
+  border-color: var(--accent-blue);
+  background: rgba(59,130,246,0.07);
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.08);
+}
+
+.backup-mode-option input {
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.backup-mode-option strong,
+.backup-mode-option small { display: block; }
+.backup-mode-option strong { color: var(--text-primary); font-size: 0.82rem; }
+.backup-mode-option small { margin-top: 3px; color: var(--text-muted); font-size: 0.68rem; line-height: 1.45; }
+
+.backup-mode-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.backup-mode-icon svg { width: 18px; height: 18px; }
+.backup-mode-icon.private { color: var(--accent-red); background: rgba(239,68,68,0.1); }
+.backup-mode-icon.public { color: var(--accent-green); background: rgba(16,185,129,0.1); }
+
+.backup-password-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.backup-password-fields[hidden] { display: none !important; }
+.backup-password-fields small { color: var(--text-muted); font-size: 0.67rem; line-height: 1.45; }
+
+.backup-warning {
+  min-height: 0;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+.backup-warning.warn { color: var(--accent-orange); }
+.backup-password-error { min-height: 18px; color: var(--accent-red); font-size: 0.72rem; text-align: center; }
+
+.backup-dialog-card .rename-btns { margin-top: 2px; }
+.backup-dialog-card .choice-cancel { margin-top: 0; }
+
+@media (max-width: 420px) {
+  .backup-settings-actions { grid-template-columns: 1fr; }
+  .backup-dialog-card { padding: 22px 17px; }
+}
+
 .switch {
   position: relative;
   display: inline-block;

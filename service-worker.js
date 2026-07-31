@@ -1,9 +1,10 @@
-const CACHE_VERSION = "pic-manage-v25";
+const CACHE_VERSION = "pic-manage-v27";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./backup.js",
   "./reader.js",
   "./range-zip-reader.js",
   "./pwa.js",

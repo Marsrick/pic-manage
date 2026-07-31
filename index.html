@@ -100,6 +100,7 @@
     <div class="ms-actions">
       <button class="ms-btn" id="multiSelectAllBtn" onclick="toggleSelectAll()" aria-pressed="false">全选</button>
       <button class="ms-btn" onclick="moveSelected()">移动</button>
+      <button class="ms-btn" onclick="openBackupExport('selected')" data-i18n="backupExportSelected">导出</button>
       <button class="ms-btn danger" onclick="deleteSelected()">删除</button>
       <button class="ms-btn primary" onclick="compressSelected()">压缩</button>
       <button class="ms-btn" onclick="toggleMultiSelect()">取消</button>
@@ -171,6 +172,7 @@
 
     <!-- Hidden File Input for Uploads -->
     <input type="file" id="fileInput" class="hidden-input" multiple>
+    <input type="file" id="backupFileInput" class="hidden-input" accept=".zip,.pmbak,application/zip,application/octet-stream">
 
   </main>
   <!-- ===== COMPRESS FAB (visible in multi-select mode) ===== -->
@@ -241,7 +243,7 @@
 
 <!-- ===== SETTINGS DIALOG ===== -->
 <div class="choice-dialog" id="settingsDialog">
-  <div class="choice-card" style="padding-top: 24px; padding-bottom: 24px;">
+  <div class="choice-card settings-card" style="padding-top: 24px; padding-bottom: 24px;">
     <h3 data-i18n="securityTitle">应用安全设置</h3>
     <p data-i18n="securityDesc" style="margin-bottom: 8px;">设置本应用启动与后台返回时的手势密码</p>
     
@@ -258,8 +260,73 @@
         <span data-i18n="btnSetNormalLock">设置/修改手势密码</span>
       </button>
     </div>
+
+    <div class="settings-divider"></div>
+    <div class="settings-section-title" data-i18n="backupTitle">文件备份</div>
+    <p data-i18n="backupDesc">导出全部文件，或从文件列表勾选后导出；恢复不会覆盖现有文件</p>
+    <div class="backup-settings-actions">
+      <button type="button" class="backup-settings-btn primary" onclick="openBackupExport('all')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V3m0 0L7.5 7.5M12 3l4.5 4.5M4.5 15.75v3A2.25 2.25 0 006.75 21h10.5a2.25 2.25 0 002.25-2.25v-3"/></svg>
+        <span data-i18n="backupExportAll">导出全部</span>
+      </button>
+      <button type="button" class="backup-settings-btn" onclick="triggerBackupImport()">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v13.5m0 0l4.5-4.5M12 16.5L7.5 12M4.5 8.25v-3A2.25 2.25 0 016.75 3h10.5a2.25 2.25 0 012.25 2.25v3"/></svg>
+        <span data-i18n="backupImport">导入备份</span>
+      </button>
+    </div>
     
     <button class="choice-cancel" onclick="closeSettings()" data-i18n="btnClose" style="margin-top: 4px;">关闭</button>
+  </div>
+</div>
+
+<!-- ===== BACKUP EXPORT DIALOG ===== -->
+<div class="choice-dialog" id="backupExportDialog">
+  <div class="choice-card backup-dialog-card">
+    <h3 data-i18n="backupExportTitle">导出文件备份</h3>
+    <p class="backup-summary" id="backupExportSummary"></p>
+
+    <label class="backup-mode-option active" id="backupModeEncryptedLabel">
+      <input type="radio" name="backupMode" value="encrypted" checked onchange="setBackupExportMode(this.value)">
+      <span class="backup-mode-icon private">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75z"/></svg>
+      </span>
+      <span><strong data-i18n="backupEncryptedMode">加密备份</strong><small data-i18n="backupEncryptedDesc">生成 .pmbak 密文，仅本程序可用密码恢复</small></span>
+    </label>
+
+    <label class="backup-mode-option" id="backupModePlainLabel">
+      <input type="radio" name="backupMode" value="plain" onchange="setBackupExportMode(this.value)">
+      <span class="backup-mode-icon public">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542"/></svg>
+      </span>
+      <span><strong data-i18n="backupPlainMode">普通 ZIP</strong><small data-i18n="backupPlainDesc">保留原文件格式，任意解压程序都可打开</small></span>
+    </label>
+
+    <div class="backup-password-fields" id="backupPasswordFields">
+      <input type="password" class="rename-input" id="backupPassword" autocomplete="new-password" data-i18n-placeholder="backupPassword" placeholder="设置备份密码（至少 6 位）">
+      <input type="password" class="rename-input" id="backupPasswordConfirm" autocomplete="new-password" data-i18n-placeholder="backupPasswordConfirm" placeholder="再次输入备份密码">
+      <small data-i18n="backupPasswordTip">密码不会被保存，忘记后无法恢复加密备份</small>
+    </div>
+
+    <input type="text" class="rename-input" id="backupFileName" data-i18n-placeholder="backupFileName" placeholder="备份文件名称">
+    <div class="backup-warning" id="backupModeWarning"></div>
+    <div class="rename-btns">
+      <button class="choice-cancel" onclick="closeBackupExport()" data-i18n="btnCancel">取消</button>
+      <button class="rename-confirm" id="backupExportConfirmBtn" onclick="confirmBackupExport()" data-i18n="backupStartExport">开始导出</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ENCRYPTED BACKUP PASSWORD DIALOG ===== -->
+<div class="choice-dialog" id="backupImportPasswordDialog">
+  <div class="choice-card backup-dialog-card">
+    <h3 data-i18n="backupPasswordTitle">输入备份密码</h3>
+    <p id="backupImportFileLabel"></p>
+    <input type="password" class="rename-input" id="backupImportPassword" autocomplete="current-password" data-i18n-placeholder="backupPasswordInput" placeholder="备份密码">
+    <div class="backup-password-error" id="backupImportPasswordError"></div>
+    <div class="rename-btns">
+      <button class="choice-cancel" onclick="closeBackupImportPassword()" data-i18n="btnCancel">取消</button>
+      <button class="rename-confirm" id="backupImportConfirmBtn" onclick="confirmEncryptedBackupImport()" data-i18n="backupStartImport">开始恢复</button>
+    </div>
   </div>
 </div>
 
@@ -458,6 +525,7 @@
 
 <!-- ===== SCRIPTS ===== -->
 <script src="app.js"></script>
+<script src="backup.js"></script>
 <script src="reader.js"></script>
 <script src="range-zip-reader.js"></script>
 <script src="pwa.js"></script>
