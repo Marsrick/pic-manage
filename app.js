@@ -168,6 +168,7 @@ const IDB_CHUNK_BYTES = 1024 * 1024;
 const IDB_WRITE_BATCH_CHUNKS = 8;
 const LARGE_IMPORT_BYTES = 500 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+const resolvedChunkSizeCache = new Map();
 
 /* ===== I18N UTILS ===== */
 function t(k) { return T[lang]?.[k] || k; }
@@ -303,7 +304,13 @@ function dbGetChunks(fileId) {
   });
 }
 function dbGetChunk(fileId, index) { return new Promise((res, rej) => { const tx = db.transaction(CHUNK_STORE, "readonly"); const r = tx.objectStore(CHUNK_STORE).get(chunkKey(fileId, index)); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); }
-function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
+function isTransientIndexedDbError(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  return ["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError"].includes(name)
+    || /transaction.*(?:inactive|abort)|database.*(?:closing|closed)|indexeddb.*(?:temporar|interrupted)/i.test(message);
+}
+function dbGetChunkBatchOnce(fileId, firstIndex, lastIndex) {
   return new Promise((res, rej) => {
     const tx = db.transaction(CHUNK_STORE, "readonly");
     const store = tx.objectStore(CHUNK_STORE);
@@ -322,16 +329,66 @@ function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
     tx.onabort = () => { if (!failed) rej(tx.error || new Error("IndexedDB chunk batch read aborted")); };
   });
 }
+async function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await dbGetChunkBatchOnce(fileId, firstIndex, lastIndex);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientIndexedDbError(error) || attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+function dbStoredDataBlob(file) {
+  if (!file || file.data === undefined || file.data === null) return null;
+  const source = file.data instanceof Blob ? file.data : new Blob([file.data]);
+  if (source.size === 0 && Number(file.size || 0) > 0) return null;
+  return source;
+}
+function dbChunkDataLength(data) {
+  if (data instanceof Blob) return data.size;
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  if (ArrayBuffer.isView(data)) return data.byteLength;
+  return 0;
+}
+async function dbResolveStoredChunkSize(file) {
+  const declared = Number(file?.chunkSize);
+  const fallback = Number.isSafeInteger(declared) && declared > 0 ? declared : IDB_CHUNK_BYTES;
+  if (!file?.id || Number(file.chunkCount || 0) <= 1) return fallback;
+  const cacheKey = `${file.id}:${file.chunkCount || 0}:${fallback}`;
+  if (resolvedChunkSizeCache.has(cacheKey)) return resolvedChunkSizeCache.get(cacheKey);
+  let resolved = fallback;
+  try {
+    const first = await dbGetChunk(file.id, 0);
+    const observed = dbChunkDataLength(first?.data);
+    if (observed > 0 && observed !== fallback) {
+      console.warn("[idb] chunkSize metadata mismatch; using stored chunk size", {
+        fileId: file.id,
+        declared: fallback,
+        observed
+      });
+      resolved = observed;
+    }
+  } catch (error) {
+    if (!isTransientIndexedDbError(error)) console.warn("[idb] unable to verify stored chunk size", error);
+  }
+  resolvedChunkSizeCache.set(cacheKey, resolved);
+  return resolved;
+}
 async function dbReadStoredRange(file, start, end) {
   if (!file || end <= start) return new Uint8Array(0);
-  if (!file.isChunked) {
-    const source = file.data instanceof Blob ? file.data : new Blob([file.data || new Uint8Array(0)]);
+  const embedded = dbStoredDataBlob(file);
+  if (embedded || !file.isChunked) {
+    const source = embedded || new Blob([file.data || new Uint8Array(0)]);
     const safeStart = Math.max(0, Math.floor(start));
     const safeEnd = Math.min(source.size, Math.floor(end));
     if (safeEnd <= safeStart) return new Uint8Array(0);
     return new Uint8Array(await source.slice(safeStart, safeEnd).arrayBuffer());
   }
-  const chunkSize = Number(file.chunkSize || IDB_CHUNK_BYTES);
+  const chunkSize = await dbResolveStoredChunkSize(file);
   const firstIndex = Math.floor(start / chunkSize);
   const lastIndex = Math.floor((end - 1) / chunkSize);
   const chunks = await dbGetChunkBatch(file.id, firstIndex, lastIndex);
@@ -362,7 +419,12 @@ async function dbDeleteChunks(fileId) {
   return new Promise((res, rej) => {
     const tx = db.transaction(CHUNK_STORE, "readwrite");
     tx.objectStore(CHUNK_STORE).delete(chunkKeyRange(fileId));
-    tx.oncomplete = () => res();
+    tx.oncomplete = () => {
+      for (const key of resolvedChunkSizeCache.keys()) {
+        if (key.startsWith(`${fileId}:`)) resolvedChunkSizeCache.delete(key);
+      }
+      res();
+    };
     tx.onerror = () => rej(tx.error || new Error("IndexedDB chunk delete failed"));
     tx.onabort = () => rej(tx.error || new Error("IndexedDB chunk delete aborted"));
   });

@@ -1,4 +1,4 @@
-const CACHE_VERSION = "pic-manage-v29";
+const CACHE_VERSION = "pic-manage-v30";
 const MEDIA_ROUTE = "/__pic_manage_media__";
 const MEDIA_DB_NAME = "PicManageDB";
 const MEDIA_FILE_STORE = "files";

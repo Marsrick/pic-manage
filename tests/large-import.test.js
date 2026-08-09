@@ -162,11 +162,56 @@ async function testPublicWritesAreBatched(context) {
   );
 }
 
+async function testRangeReadUsesEmbeddedHistoricalData(context) {
+  context.__historicalBlob = new Blob([new Uint8Array([10, 20, 30, 40, 50, 60])]);
+  const bytes = await vm.runInContext(`(async () => {
+    const originalBatch = dbGetChunkBatch;
+    dbGetChunkBatch = async () => { throw new Error("chunk lookup must not run"); };
+    try {
+      return await dbReadStoredRange({
+        id: 91,
+        size: 6,
+        data: __historicalBlob,
+        isChunked: true,
+        chunkSize: IDB_CHUNK_BYTES,
+        chunkCount: 99
+      }, 1, 5);
+    } finally {
+      dbGetChunkBatch = originalBatch;
+    }
+  })()`, context);
+  assert.deepStrictEqual(Array.from(bytes), [20, 30, 40, 50], "embedded historical data must win over stale chunk metadata");
+}
+
+async function testRangeReadRepairsHistoricalChunkSize(context) {
+  const bytes = await vm.runInContext(`(async () => {
+    const originalGet = dbGetChunk;
+    const originalBatch = dbGetChunkBatch;
+    const chunks = [
+      { data: new Uint8Array([1, 2, 3, 4]).buffer },
+      { data: new Uint8Array([5, 6, 7, 8]).buffer }
+    ];
+    dbGetChunk = async (_fileId, index) => chunks[index] || null;
+    dbGetChunkBatch = async (_fileId, first, last) => chunks.slice(first, last + 1);
+    resolvedChunkSizeCache.clear();
+    try {
+      return await dbReadStoredRange({ id: 92, size: 8, isChunked: true, chunkSize: 2, chunkCount: 2 }, 0, 8);
+    } finally {
+      dbGetChunk = originalGet;
+      dbGetChunkBatch = originalBatch;
+      resolvedChunkSizeCache.clear();
+    }
+  })()`, context);
+  assert.deepStrictEqual(Array.from(bytes), [1, 2, 3, 4, 5, 6, 7, 8], "range reads must use the observed historical chunk size");
+}
+
 (async () => {
   const context = makeContext();
   await testOver500MbSelectionIsAccepted(context);
   await testPrivateStreamingRoundTrip(context);
   await testPublicWritesAreBatched(context);
+  await testRangeReadUsesEmbeddedHistoricalData(context);
+  await testRangeReadRepairsHistoricalChunkSize(context);
   console.log("large-import tests passed");
 })().catch(error => {
   console.error(error);

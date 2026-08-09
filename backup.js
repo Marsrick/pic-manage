@@ -29,6 +29,21 @@ function backupYield() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
+function backupWaitForForeground() {
+  if (typeof document === "undefined" || document.visibilityState !== "hidden" || typeof document.addEventListener !== "function") {
+    return Promise.resolve();
+  }
+  backupSetProgress(0, 1, "返回应用后将自动继续", "备份已暂停");
+  return new Promise(resolve => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") return;
+      document.removeEventListener?.("visibilitychange", onVisibilityChange);
+      resolve();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  });
+}
+
 function backupSetProgress(done, total, fileName, title) {
   updateImportProgress(done, total, fileName);
   const heading = document.getElementById("importProgressTitle");
@@ -485,6 +500,7 @@ async function runBackupExport(state, mode, password, downloadName) {
     }
 
     for (let index = 0; index < volumes.length; index++) {
+      await backupWaitForForeground();
       const volumeFiles = volumes[index];
       const totalSteps = Math.max(1, volumeFiles.length * 2 + 2);
       const volumeState = {
@@ -725,7 +741,12 @@ async function backupBuildEncryptedContainer(state, sources, password, totalStep
     }
     backupSetProgress(fileIndex * 2 + 1, totalSteps, record.name, "正在生成加密备份");
     for (let offset = 0; offset < itemSize; offset += BACKUP_ENCRYPT_CHUNK_BYTES) {
-      const plain = await read(offset, Math.min(itemSize, offset + BACKUP_ENCRYPT_CHUNK_BYTES));
+      let plain;
+      try {
+        plain = await read(offset, Math.min(itemSize, offset + BACKUP_ENCRYPT_CHUNK_BYTES));
+      } catch (error) {
+        throw new Error(`${record.name}: ${error?.message || error}`, { cause: error });
+      }
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
       parts.push(backupEncryptedFrameHeader(iv, encrypted.byteLength), encrypted);
