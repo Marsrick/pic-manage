@@ -103,11 +103,61 @@ async function testEncryptedRoundTrip() {
   const emptyOpened = await context.backupOpenEncryptedContainer(emptyBackup, "correct horse");
   assert.equal(emptyOpened.manifest.files.length, 0);
   assert.equal(emptyOpened.manifest.folders[0].name, "空文件夹");
+
+  const rangePayload = new Blob(["range-reader-content"], { type: "text/plain" });
+  const rangeSource = {
+    name: "range.txt",
+    type: "text/plain",
+    size: rangePayload.size,
+    isPrivate: false,
+    uploadedAt: 789
+  };
+  const rangedBackup = await context.backupBuildEncryptedContainer(
+    {
+      scope: "all",
+      folders: [],
+      volume: { id: "test-volume", index: 1, count: 2, totalFiles: 1, totalBytes: rangePayload.size }
+    },
+    [rangeSource],
+    "correct horse",
+    4,
+    async source => ({
+      record: source,
+      size: source.size,
+      read: (start, end) => rangePayload.slice(start, end).arrayBuffer()
+    })
+  );
+  const rangedOpened = await context.backupOpenEncryptedContainer(rangedBackup, "correct horse");
+  assert.equal(rangedOpened.manifest.volume.index, 1);
+  assert.equal(rangedOpened.manifest.volume.count, 2);
+  assert.equal(await blobText(await rangedOpened.getFileBlob(rangedOpened.manifest.files[0], 0)), "range-reader-content");
+}
+
+function testLargeExportVolumePlan() {
+  const mib = 1024 * 1024;
+  const files = [
+    { name: "a.bin", size: 180 * mib },
+    { name: "b.bin", size: 180 * mib },
+    { name: "c.bin", size: 80 * mib },
+    { name: "large.bin", size: 325 * mib },
+    { name: "d.bin", size: 10 * mib }
+  ];
+  const volumes = context.backupPlanVolumes(files, 256 * mib);
+  assert.equal(JSON.stringify(volumes.map(volume => volume.map(file => file.name))), JSON.stringify([
+    ["a.bin"],
+    ["b.bin"],
+    ["c.bin"],
+    ["large.bin"],
+    ["d.bin"]
+  ]));
+  assert.equal(context.backupVolumeDownloadName("full.zip", 0, 12), "full.part-01-of-12.zip");
+  assert.equal(context.backupVolumeDownloadName("full.pmbak", 11, 12), "full.part-12-of-12.pmbak");
 }
 
 (async () => {
   await testPlainZipRoundTrip();
   await testEncryptedRoundTrip();
+  testLargeExportVolumePlan();
   console.log("Backup format tests passed");
 })().catch(error => {
   console.error(error);

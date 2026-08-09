@@ -18,6 +18,8 @@ const BACKUP_KDF_ITERATIONS = 250000;
 const BACKUP_IO_CHUNK_BYTES = 4 * 1024 * 1024;
 const BACKUP_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const BACKUP_ZIP_UINT32_MAX = 0xffffffff;
+const BACKUP_VOLUME_TARGET_BYTES = 256 * 1024 * 1024;
+const BACKUP_DOWNLOAD_RELEASE_MS = 2500;
 
 let backupExportState = null;
 let backupImportPendingFile = null;
@@ -72,6 +74,45 @@ function backupAppendNameSuffix(name, suffix) {
   const value = String(name || "file");
   const match = value.match(/^(.*?)(\.[^.]{1,16})$/);
   return match ? `${match[1]}${suffix}${match[2]}` : `${value}${suffix}`;
+}
+
+function backupPlanVolumes(files, targetBytes = BACKUP_VOLUME_TARGET_BYTES) {
+  const limit = Math.max(1, Number(targetBytes) || BACKUP_VOLUME_TARGET_BYTES);
+  const volumes = [];
+  let current = [];
+  let currentBytes = 0;
+
+  for (const file of files) {
+    const size = Math.max(0, Number(file?.size || 0));
+    if (current.length && currentBytes + size > limit) {
+      volumes.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(file);
+    currentBytes += size;
+    if (currentBytes >= limit) {
+      volumes.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+  }
+  if (current.length || !volumes.length) volumes.push(current);
+  return volumes;
+}
+
+function backupVolumeDownloadName(name, index, count) {
+  if (count <= 1) return name;
+  const match = String(name).match(/^(.*?)(\.(?:zip|pmbak))$/i);
+  const base = match ? match[1] : String(name);
+  const extension = match ? match[2] : "";
+  const width = Math.max(2, String(count).length);
+  return `${base}.part-${String(index + 1).padStart(width, "0")}-of-${String(count).padStart(width, "0")}${extension}`;
+}
+
+function backupCollectionId() {
+  const random = crypto.getRandomValues(new Uint32Array(2));
+  return `${Date.now().toString(36)}-${random[0].toString(36)}${random[1].toString(36)}`;
 }
 
 function backupMakeUniquePath(basePath, usedPaths) {
@@ -288,6 +329,88 @@ async function backupPlainBlobForFile(file) {
     : backupDecryptLegacyPrivateFile(file, header);
 }
 
+async function backupCreatePlainFileReader(file) {
+  const size = Math.max(0, Number(file?.size || 0));
+  if (!file.isPrivate) {
+    return {
+      record: file,
+      size,
+      read: (start, end) => dbReadStoredRange(file, start, end)
+    };
+  }
+  if (!adminKey) throw new Error("管理员会话已过期");
+
+  const header = await dbReadStoredRange(file, 0, 28);
+  if (header.length < 28) throw new Error("私密文件头不完整");
+
+  if (isChunkedEncryptedData(header)) {
+    const plainChunkSize = readUint32FromBytes(header, 24);
+    if (!plainChunkSize || plainChunkSize > 64 * 1024 * 1024) throw new Error("私密文件加密分块无效");
+    const key = await deriveKey(adminKey, header.slice(8, 24));
+    return {
+      record: file,
+      size,
+      async read(start, end) {
+        const safeStart = Math.max(0, Math.min(size, Math.floor(start)));
+        const safeEnd = Math.max(safeStart, Math.min(size, Math.floor(end)));
+        const output = new Uint8Array(safeEnd - safeStart);
+        if (!output.length) return output;
+        const firstIndex = Math.floor(safeStart / plainChunkSize);
+        const lastIndex = Math.floor((safeEnd - 1) / plainChunkSize);
+        let written = 0;
+        for (let index = firstIndex; index <= lastIndex; index++) {
+          const plainStart = index * plainChunkSize;
+          const plainLength = Math.min(plainChunkSize, size - plainStart);
+          const frameStart = 28 + index * (plainChunkSize + 32);
+          const frame = await dbReadStoredRange(file, frameStart, frameStart + plainLength + 32);
+          if (frame.length !== plainLength + 32) throw new Error("私密文件分块不完整");
+          const encryptedLength = readUint32FromBytes(frame, 12);
+          if (encryptedLength !== plainLength + 16) throw new Error("私密文件分块长度无效");
+          const plain = new Uint8Array(await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: frame.slice(0, 12) },
+            key,
+            frame.slice(16, 16 + encryptedLength)
+          ));
+          const from = Math.max(safeStart, plainStart) - plainStart;
+          const to = Math.min(safeEnd, plainStart + plainLength) - plainStart;
+          output.set(plain.subarray(from, to), written);
+          written += to - from;
+        }
+        return output;
+      }
+    };
+  }
+
+  const raw = await crypto.subtle.importKey("raw", new TextEncoder().encode(adminKey), "PBKDF2", false, ["deriveBits"]);
+  const keyBits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: header.slice(0, 16), iterations: 100000, hash: "SHA-256" },
+    raw,
+    256
+  );
+  const key = await crypto.subtle.importKey("raw", keyBits, "AES-CTR", false, ["decrypt"]);
+  const iv = header.slice(16, 28);
+  return {
+    record: file,
+    size,
+    async read(start, end) {
+      const safeStart = Math.max(0, Math.min(size, Math.floor(start)));
+      const safeEnd = Math.max(safeStart, Math.min(size, Math.floor(end)));
+      if (safeEnd <= safeStart) return new Uint8Array(0);
+      const alignedStart = Math.floor(safeStart / 16) * 16;
+      const ciphertext = await dbReadStoredRange(file, 28 + alignedStart, 28 + safeEnd);
+      const counter = new Uint8Array(16);
+      counter.set(iv, 0);
+      new DataView(counter.buffer).setUint32(12, (2 + Math.floor(alignedStart / 16)) >>> 0, false);
+      const plain = new Uint8Array(await crypto.subtle.decrypt(
+        { name: "AES-CTR", counter, length: 32 },
+        key,
+        ciphertext
+      ));
+      return plain.subarray(safeStart - alignedStart);
+    }
+  };
+}
+
 async function backupPrepareFiles(files, totalSteps) {
   const prepared = [];
   for (let index = 0; index < files.length; index++) {
@@ -308,7 +431,7 @@ async function backupPrepareFiles(files, totalSteps) {
 }
 
 function backupBaseManifest(state, mode) {
-  return {
+  const manifest = {
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
     mode,
@@ -321,6 +444,8 @@ function backupBaseManifest(state, mode) {
     })).filter(folder => folder.name),
     files: []
   };
+  if (state.volume) manifest.volume = { ...state.volume };
+  return manifest;
 }
 
 function backupFileMetadata(item) {
@@ -351,24 +476,51 @@ function backupFileMetadataFromRecord(file) {
 
 async function runBackupExport(state, mode, password, downloadName) {
   const files = state.files;
-  const totalSteps = Math.max(1, files.length * 2 + 2);
+  const volumes = backupPlanVolumes(files);
+  const collectionId = backupCollectionId();
+  const totalBytes = files.reduce((sum, file) => sum + Math.max(0, Number(file.size || 0)), 0);
   try {
-    let output;
-    if (mode === "plain") {
-      const prepared = await backupPrepareFiles(files, totalSteps);
-      output = await backupBuildPlainZip(state, prepared, totalSteps);
-    } else {
-      output = await backupBuildEncryptedContainer(
-        state,
-        files,
-        password,
-        totalSteps,
-        async file => ({ record: file, blob: await backupPlainBlobForFile(file) })
-      );
+    if (volumes.length > 1) {
+      toast(`数据量较大，将自动导出 ${volumes.length} 个分卷，请允许浏览器下载多个文件`, "info");
     }
-    backupSetProgress(totalSteps, totalSteps, downloadName, "备份已生成");
-    backupDownloadBlob(output, downloadName);
-    toast(`已导出 ${files.length} 个文件`, "success");
+
+    for (let index = 0; index < volumes.length; index++) {
+      const volumeFiles = volumes[index];
+      const totalSteps = Math.max(1, volumeFiles.length * 2 + 2);
+      const volumeState = {
+        ...state,
+        files: volumeFiles,
+        volume: volumes.length > 1 ? {
+          id: collectionId,
+          index: index + 1,
+          count: volumes.length,
+          totalFiles: files.length,
+          totalBytes
+        } : null
+      };
+      const volumeName = backupVolumeDownloadName(downloadName, index, volumes.length);
+      const titleSuffix = volumes.length > 1 ? `（${index + 1}/${volumes.length}）` : "";
+      let output = null;
+
+      if (mode === "plain") {
+        const prepared = await backupPrepareFiles(volumeFiles, totalSteps);
+        output = await backupBuildPlainZip(volumeState, prepared, totalSteps);
+      } else {
+        output = await backupBuildEncryptedContainer(
+          volumeState,
+          volumeFiles,
+          password,
+          totalSteps,
+          file => backupCreatePlainFileReader(file)
+        );
+      }
+
+      backupSetProgress(totalSteps, totalSteps, volumeName, `备份已生成${titleSuffix}`);
+      await backupDownloadBlob(output, volumeName);
+      output = null;
+      await backupYield();
+    }
+    toast(`已导出 ${files.length} 个文件${volumes.length > 1 ? `（${volumes.length} 个分卷）` : ""}`, "success");
   } catch (error) {
     console.error("[backup-export]", error);
     toast("备份导出失败: " + (error?.message || error), "error");
@@ -563,24 +715,29 @@ async function backupBuildEncryptedContainer(state, sources, password, totalStep
     const source = sources[fileIndex];
     const record = sourceFactory ? source : source.record;
     backupSetProgress(fileIndex * 2, totalSteps, record.name, "正在读取备份文件");
-    const item = sourceFactory ? await sourceFactory(source, fileIndex) : source;
-    if (!(item.blob instanceof Blob) || item.blob.size !== manifest.files[fileIndex].contentSize) {
+    let item = sourceFactory ? await sourceFactory(source, fileIndex) : source;
+    const itemSize = item?.blob instanceof Blob ? item.blob.size : Number(item?.size);
+    const read = item?.blob instanceof Blob
+      ? (start, end) => item.blob.slice(start, end).arrayBuffer()
+      : item?.read;
+    if (!Number.isSafeInteger(itemSize) || itemSize !== manifest.files[fileIndex].contentSize || typeof read !== "function") {
       throw new Error(`${record.name}: 文件大小校验失败`);
     }
     backupSetProgress(fileIndex * 2 + 1, totalSteps, record.name, "正在生成加密备份");
-    for (let offset = 0; offset < item.blob.size; offset += BACKUP_ENCRYPT_CHUNK_BYTES) {
-      const plain = await item.blob.slice(offset, offset + BACKUP_ENCRYPT_CHUNK_BYTES).arrayBuffer();
+    for (let offset = 0; offset < itemSize; offset += BACKUP_ENCRYPT_CHUNK_BYTES) {
+      const plain = await read(offset, Math.min(itemSize, offset + BACKUP_ENCRYPT_CHUNK_BYTES));
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
       parts.push(backupEncryptedFrameHeader(iv, encrypted.byteLength), encrypted);
       await backupYield();
     }
+    item = null;
     backupSetProgress(fileIndex * 2 + 2, totalSteps, record.name, "正在生成加密备份");
   }
   return new Blob(parts, { type: "application/x-pic-manage-backup" });
 }
 
-function backupDownloadBlob(blob, name) {
+async function backupDownloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -589,7 +746,8 @@ function backupDownloadBlob(blob, name) {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  await new Promise(resolve => setTimeout(resolve, BACKUP_DOWNLOAD_RELEASE_MS));
+  URL.revokeObjectURL(url);
 }
 
 function triggerBackupImport() {
@@ -876,6 +1034,20 @@ function backupValidateManifest(manifest, expectedMode) {
     }
     return meta;
   });
+  if (manifest.volume) {
+    const index = Number(manifest.volume.index);
+    const count = Number(manifest.volume.count);
+    if (!manifest.volume.id || !Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 1 || count < index) {
+      throw new Error("备份分卷信息无效");
+    }
+    manifest.volume = {
+      id: String(manifest.volume.id).slice(0, 100),
+      index,
+      count,
+      totalFiles: Math.max(0, Number(manifest.volume.totalFiles || manifest.files.length)),
+      totalBytes: Math.max(0, Number(manifest.volume.totalBytes || 0))
+    };
+  }
   return manifest;
 }
 
@@ -889,7 +1061,10 @@ function backupConfirmRestore(manifest) {
     return false;
   }
   const totalBytes = manifest.files.reduce((sum, file) => sum + file.contentSize, 0);
-  return confirm(`备份包含 ${manifest.files.length} 个文件（${fmtSize(totalBytes)}）。\n恢复不会覆盖现有文件；同名文件会自动保留为副本。\n\n是否开始恢复？`);
+  const volumeText = manifest.volume
+    ? `\n这是分卷 ${manifest.volume.index}/${manifest.volume.count}，请将其他分卷也依次导入。`
+    : "";
+  return confirm(`备份包含 ${manifest.files.length} 个文件（${fmtSize(totalBytes)}）。${volumeText}\n恢复不会覆盖现有文件；同名文件会自动保留为副本。\n\n是否开始恢复？`);
 }
 
 function backupUniqueFolderName(base, usedNames) {

@@ -3,7 +3,7 @@ const T = {
   zh: {
     myFiles: "文档小助手", adminSpace: "管理员空间", adminMode: "管理员",
     searchPlaceholder: "搜索文件...",
-    catAll: "全部", catDoc: "文档", catImage: "图片", catComic: "漫画", catOther: "其他",
+    catAll: "全部", catDoc: "文档", catImage: "图片", catComic: "漫画", catVideo: "视频", catOther: "其他",
     recentFiles: "最近文件", allFiles: "全部文件",
     feedbackTitle: "问题反馈", feedbackDesc: "请描述您遇到的问题，我们会尽快处理",
     labelDesc: "反馈内容", phDesc: "请详细描述您遇到的问题或改进建议...",
@@ -17,7 +17,7 @@ const T = {
     forgotGesture: "忘记密码？",
     vaultTitle: "管理员空间", vaultDesc: "AES-256 本地加密 · 离线存储",
     uploadText: "点击或拖拽文件到此处导入",
-    uploadHint: "支持图片、PDF、TXT 及 ZIP 漫画压缩包",
+    uploadHint: "支持图片、视频、PDF、TXT 及 ZIP 漫画压缩包",
     encryptMode: "加密方式：AES-256 本地加密",
     storageChoice: "存储方式", storageChoiceDesc: "选择该文件的存储方式",
     storePrivate: "加密存储", storePrivateDesc: "AES-256加密，仅管理员可见",
@@ -62,7 +62,7 @@ const T = {
   en: {
     myFiles: "My Files", adminSpace: "Admin Space", adminMode: "Admin",
     searchPlaceholder: "Search files...",
-    catAll: "All", catDoc: "Docs", catImage: "Images", catComic: "Comics", catOther: "Others",
+    catAll: "All", catDoc: "Docs", catImage: "Images", catComic: "Comics", catVideo: "Videos", catOther: "Others",
     recentFiles: "Recent Files", allFiles: "All Files",
     feedbackTitle: "Feedback", feedbackDesc: "Describe any issues and we'll get back to you",
     labelDesc: "Details", phDesc: "Describe the issue or suggestions in detail...",
@@ -76,7 +76,7 @@ const T = {
     forgotGesture: "Forgot password?",
     vaultTitle: "Admin Space", vaultDesc: "AES-256 Local Encryption · Offline Storage",
     uploadText: "Click or drag files here to import",
-    uploadHint: "Supports images, PDF, TXT and ZIP comics",
+    uploadHint: "Supports images, videos, PDF, TXT and ZIP comics",
     encryptMode: "Encryption: AES-256 Local",
     storageChoice: "Storage Mode", storageChoiceDesc: "Choose how to store this file",
     storePrivate: "Encrypted Storage", storePrivateDesc: "AES-256, admin only",
@@ -148,6 +148,7 @@ let fileMoveTrayToken = 0;
 let uploadTargetFolder = null;
 let compressFolderName = null;
 let fileCoverUrls = [];
+let previewObjectUrls = [];
 const coverGeneratingIds = new Set();
 let coverHydrateSeq = 0;
 const MAX_AUTO_COVER_BYTES = 80 * 1024 * 1024;
@@ -838,11 +839,16 @@ function fmtDate(ts) {
 
 function getFileExt(name) { return (name || "").split(".").pop().toLowerCase(); }
 
+function isVideoFileName(name) {
+  return ["mp4", "m4v", "mov", "webm", "ogv", "ogg", "mkv", "avi", "3gp", "3g2", "mpg", "mpeg", "ts", "m2ts"].includes(getFileExt(name));
+}
+
 function getFileCat(name) {
   const ext = getFileExt(name);
   if (["pdf","doc","docx","xls","xlsx","ppt","pptx"].includes(ext)) return "doc";
   if (["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) return "image";
   if (ext === "zip" || ext === "cbz" || ext === "cbr" || ext === "7z" || ext === "tar" || ext === "rar") return "comic";
+  if (isVideoFileName(name)) return "video";
   if (["txt","json","xml","js","html","css","md","log"].includes(ext)) return "doc";
   return "other";
 }
@@ -868,6 +874,16 @@ function detectMagicFormat(uint8) {
   if (uint8.length >= 6 && uint8[0] === 0x47 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x38) return "gif";
   // WEBP (RIFF....WEBP)
   if (uint8.length >= 12 && uint8[0] === 0x52 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x46 && uint8[8] === 0x57 && uint8[9] === 0x45 && uint8[10] === 0x42 && uint8[11] === 0x50) return "webp";
+  // MP4 / MOV / M4V (ISO base media)
+  if (uint8.length >= 12 && uint8[4] === 0x66 && uint8[5] === 0x74 && uint8[6] === 0x79 && uint8[7] === 0x70) return "mp4";
+  // WebM / Matroska (EBML)
+  if (uint8[0] === 0x1A && uint8[1] === 0x45 && uint8[2] === 0xDF && uint8[3] === 0xA3) return "webm";
+  // Ogg video
+  if (uint8[0] === 0x4F && uint8[1] === 0x67 && uint8[2] === 0x67 && uint8[3] === 0x53) return "ogg";
+  // AVI (RIFF....AVI )
+  if (uint8.length >= 12 && uint8[0] === 0x52 && uint8[1] === 0x49 && uint8[2] === 0x46 && uint8[3] === 0x46 && uint8[8] === 0x41 && uint8[9] === 0x56 && uint8[10] === 0x49 && uint8[11] === 0x20) return "avi";
+  // MPEG program/video stream
+  if (uint8[0] === 0x00 && uint8[1] === 0x00 && uint8[2] === 0x01 && (uint8[3] === 0xBA || uint8[3] === 0xB3)) return "mpeg";
   // BMP
   if (uint8[0] === 0x42 && uint8[1] === 0x4D) return "bmp";
   // Legacy MS Office (.doc/.xls/.ppt) — OLE compound
@@ -915,6 +931,7 @@ async function probeStoredFileFormat(f) {
 }
 function isArchiveFormat(fmt) { return ["zip", "7z", "gzip", "tar", "rar"].includes(fmt); }
 function isImageFormat(fmt) { return ["png", "jpeg", "gif", "webp", "bmp"].includes(fmt); }
+function isVideoFormat(fmt) { return ["mp4", "webm", "ogg", "avi", "mpeg"].includes(fmt); }
 
 function clearFileCoverUrls() {
   fileCoverUrls.forEach(url => URL.revokeObjectURL(url));
@@ -1143,6 +1160,7 @@ function getIconClass(name) {
   const cat = getFileCat(name);
   if (cat === "comic") return "zip";
   if (cat === "image") return "img";
+  if (cat === "video") return "video";
   if (cat === "doc") {
     const ext = getFileExt(name);
     if (ext === "pdf") return "pdf";
@@ -1157,6 +1175,7 @@ function getIconSVG(name) {
   const icons = {
     zip: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>`,
     img: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5z"/></svg>`,
+    video: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5 21 7.5v9l-5.25-3m-10.5 6h8.25A2.25 2.25 0 0015.75 17.25V6.75A2.25 2.25 0 0013.5 4.5H5.25A2.25 2.25 0 003 6.75v10.5a2.25 2.25 0 002.25 2.25z"/></svg>`,
     pdf: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>`,
     doc: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>`,
     txt: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m5.25 12H8.25m6.75 3H8.25M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>`,
@@ -1726,6 +1745,7 @@ function updateCategoryCounts(files) {
   document.getElementById("countDoc").textContent = files.filter(f => getFileCat(f.name) === "doc").length;
   document.getElementById("countImage").textContent = files.filter(f => getFileCat(f.name) === "image").length;
   document.getElementById("countComic").textContent = files.filter(f => getFileCat(f.name) === "comic").length;
+  document.getElementById("countVideo").textContent = files.filter(f => getFileCat(f.name) === "video").length;
   document.getElementById("countOther").textContent = files.filter(f => getFileCat(f.name) === "other").length;
 }
 
@@ -3282,6 +3302,336 @@ function tarHeader(name, size) {
 }
 
 /* ===== FILE VIEW ===== */
+function getVideoMimeType(file, detectedFormat = "unknown") {
+  if (String(file?.type || "").toLowerCase().startsWith("video/")) return file.type;
+  const byFormat = {
+    mp4: "video/mp4",
+    webm: "video/webm",
+    ogg: "video/ogg",
+    avi: "video/x-msvideo",
+    mpeg: "video/mpeg"
+  };
+  if (byFormat[detectedFormat]) return byFormat[detectedFormat];
+  const byExtension = {
+    mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime",
+    webm: "video/webm", ogv: "video/ogg", ogg: "video/ogg",
+    mkv: "video/x-matroska", avi: "video/x-msvideo",
+    "3gp": "video/3gpp", "3g2": "video/3gpp2",
+    mpg: "video/mpeg", mpeg: "video/mpeg", ts: "video/mp2t", m2ts: "video/mp2t"
+  };
+  return byExtension[getFileExt(file?.name)] || "video/mp4";
+}
+
+function formatVideoTime(seconds) {
+  const total = Number.isFinite(Number(seconds)) && seconds > 0 ? Math.floor(seconds) : 0;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function readVideoPreference(key, fallback, min, max) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
+function setupVideoControls(video, stage, controls, holdIndicator) {
+  const labels = lang === "zh"
+    ? {
+        play: "播放", pause: "暂停", progress: "播放进度", fullscreen: "全屏",
+        speed: "倍速", brightness: "亮度", volume: "音量", mute: "静音"
+      }
+    : {
+        play: "Play", pause: "Pause", progress: "Playback progress", fullscreen: "Fullscreen",
+        speed: "Speed", brightness: "Brightness", volume: "Volume", mute: "Mute"
+      };
+  controls.innerHTML = `
+    <div class="video-controls-main">
+      <button type="button" class="video-control-btn video-play-toggle" data-video-action="play" aria-label="${labels.play}">
+        <svg class="video-icon-play" fill="currentColor" viewBox="0 0 24 24"><path d="M8.25 5.5v13l10-6.5-10-6.5z"/></svg>
+        <svg class="video-icon-pause" fill="currentColor" viewBox="0 0 24 24"><path d="M7 5.5h3.5v13H7zm6.5 0H17v13h-3.5z"/></svg>
+      </button>
+      <span class="video-time-label" data-video-time>00:00 / 00:00</span>
+      <input class="video-progress-range" data-video-progress type="range" min="0" max="1000" value="0" step="1" aria-label="${labels.progress}">
+      <button type="button" class="video-control-btn" data-video-action="fullscreen" aria-label="${labels.fullscreen}">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3.75H5.5A1.75 1.75 0 003.75 5.5v2.75m12-4.5h2.75a1.75 1.75 0 011.75 1.75v2.75m0 7.5v2.75a1.75 1.75 0 01-1.75 1.75h-2.75m-7.5 0H5.5a1.75 1.75 0 01-1.75-1.75v-2.75"/></svg>
+      </button>
+    </div>
+    <div class="video-controls-settings">
+      <label class="video-speed-control">
+        <span>${labels.speed}</span>
+        <select data-video-speed aria-label="${labels.speed}">
+          <option value="0.5">0.5×</option>
+          <option value="0.75">0.75×</option>
+          <option value="1">1.0×</option>
+          <option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2.0×</option>
+        </select>
+      </label>
+      <label class="video-adjust-control">
+        <span>${labels.brightness}</span>
+        <input data-video-brightness type="range" min="50" max="150" value="100" step="5" aria-label="${labels.brightness}">
+        <output data-video-brightness-value>100%</output>
+      </label>
+      <div class="video-adjust-control video-volume-control">
+        <button type="button" class="video-inline-icon-btn" data-video-action="mute" aria-label="${labels.mute}">
+          <svg class="video-icon-volume" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 5.25 6.75 9H3.5v6h3.25l4.5 3.75V5.25zm4.5 3a5.25 5.25 0 010 7.5m2.5-9.75a8.25 8.25 0 010 12"/></svg>
+          <svg class="video-icon-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="m11.25 5.25-4.5 3.75H3.5v6h3.25l4.5 3.75V5.25zm4.5 5 4 4m0-4-4 4"/></svg>
+        </button>
+        <input data-video-volume type="range" min="0" max="100" value="100" step="1" aria-label="${labels.volume}">
+        <output data-video-volume-value>100%</output>
+      </div>
+    </div>`;
+
+  const playButton = controls.querySelector('[data-video-action="play"]');
+  const fullscreenButton = controls.querySelector('[data-video-action="fullscreen"]');
+  const muteButton = controls.querySelector('[data-video-action="mute"]');
+  const progress = controls.querySelector("[data-video-progress]");
+  const timeLabel = controls.querySelector("[data-video-time]");
+  const speed = controls.querySelector("[data-video-speed]");
+  const brightness = controls.querySelector("[data-video-brightness]");
+  const brightnessValue = controls.querySelector("[data-video-brightness-value]");
+  const volume = controls.querySelector("[data-video-volume]");
+  const volumeValue = controls.querySelector("[data-video-volume-value]");
+  const allowedRates = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  let selectedRate = readVideoPreference("pm_video_rate", 1, 0.5, 2);
+  if (!allowedRates.includes(selectedRate)) selectedRate = 1;
+  let seeking = false;
+  let holdTimer = null;
+  let holdActive = false;
+  let holdStartedPlayback = false;
+  let pointerId = null;
+  let pointerStartX = 0;
+  let pointerStartY = 0;
+  let pointerMoved = false;
+
+  const updatePlayState = () => {
+    const playing = !video.paused && !video.ended;
+    playButton.classList.toggle("is-playing", playing);
+    playButton.setAttribute("aria-label", playing ? labels.pause : labels.play);
+  };
+  const updateTime = () => {
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    timeLabel.textContent = `${formatVideoTime(current)} / ${formatVideoTime(duration)}`;
+    if (!seeking) {
+      const value = duration > 0 ? Math.round((current / duration) * 1000) : 0;
+      progress.value = String(value);
+      progress.style.setProperty("--video-progress", `${value / 10}%`);
+    }
+  };
+  const togglePlayback = async () => {
+    if (video.paused || video.ended) {
+      try { await video.play(); } catch (error) { console.warn("[video] play failed", error); }
+    } else {
+      video.pause();
+    }
+  };
+  const updateMuteState = () => {
+    muteButton.classList.toggle("is-muted", video.muted || Number(volume.value) === 0);
+  };
+  const updateRangeFill = input => {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const value = Number(input.value || min);
+    const percent = max > min ? ((value - min) / (max - min)) * 100 : 0;
+    input.style.setProperty("--video-progress", `${percent}%`);
+  };
+
+  speed.value = String(selectedRate);
+  video.defaultPlaybackRate = selectedRate;
+  video.playbackRate = selectedRate;
+  video.preservesPitch = true;
+  video.webkitPreservesPitch = true;
+
+  const initialBrightness = readVideoPreference("pm_video_brightness", 1, 0.5, 1.5);
+  brightness.value = String(Math.round(initialBrightness * 100));
+  brightnessValue.textContent = `${brightness.value}%`;
+  video.style.filter = `brightness(${initialBrightness})`;
+  updateRangeFill(brightness);
+
+  const initialVolume = readVideoPreference("pm_video_volume", 1, 0, 1);
+  volume.value = String(Math.round(initialVolume * 100));
+  volumeValue.textContent = `${volume.value}%`;
+  try { video.volume = initialVolume; } catch (_) {}
+  updateRangeFill(volume);
+  updateMuteState();
+
+  playButton.addEventListener("click", togglePlayback);
+  video.addEventListener("play", updatePlayState);
+  video.addEventListener("pause", updatePlayState);
+  video.addEventListener("ended", updatePlayState);
+  video.addEventListener("timeupdate", updateTime);
+  video.addEventListener("durationchange", updateTime);
+  video.addEventListener("loadedmetadata", () => {
+    video.playbackRate = selectedRate;
+    updateTime();
+  });
+
+  progress.addEventListener("input", () => {
+    seeking = true;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const target = duration * (Number(progress.value) / 1000);
+    if (duration > 0) video.currentTime = target;
+    progress.style.setProperty("--video-progress", `${Number(progress.value) / 10}%`);
+    timeLabel.textContent = `${formatVideoTime(target)} / ${formatVideoTime(duration)}`;
+  });
+  progress.addEventListener("change", () => { seeking = false; updateTime(); });
+
+  speed.addEventListener("change", () => {
+    const next = Number(speed.value);
+    selectedRate = allowedRates.includes(next) ? next : 1;
+    video.defaultPlaybackRate = selectedRate;
+    if (!holdActive) video.playbackRate = selectedRate;
+    localStorage.setItem("pm_video_rate", String(selectedRate));
+  });
+
+  brightness.addEventListener("input", () => {
+    const next = Number(brightness.value) / 100;
+    video.style.filter = `brightness(${next})`;
+    brightnessValue.textContent = `${brightness.value}%`;
+    updateRangeFill(brightness);
+    localStorage.setItem("pm_video_brightness", String(next));
+  });
+
+  volume.addEventListener("input", () => {
+    const next = Number(volume.value) / 100;
+    try { video.volume = next; } catch (_) {}
+    video.muted = next === 0;
+    volumeValue.textContent = `${volume.value}%`;
+    updateRangeFill(volume);
+    localStorage.setItem("pm_video_volume", String(next));
+    updateMuteState();
+  });
+  muteButton.addEventListener("click", () => {
+    video.muted = !video.muted;
+    updateMuteState();
+  });
+
+  fullscreenButton.addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (stage.requestFullscreen) await stage.requestFullscreen();
+      else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    } catch (error) {
+      console.warn("[video] fullscreen failed", error);
+    }
+  });
+
+  const clearHoldTimer = () => {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = null;
+  };
+  const finishHold = () => {
+    clearHoldTimer();
+    if (holdActive) {
+      holdActive = false;
+      video.playbackRate = selectedRate;
+      holdIndicator.classList.remove("active");
+      if (holdStartedPlayback) video.pause();
+    }
+    holdStartedPlayback = false;
+    pointerId = null;
+  };
+
+  stage.addEventListener("pointerdown", event => {
+    if (event.target !== video || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    pointerStartX = event.clientX;
+    pointerStartY = event.clientY;
+    pointerMoved = false;
+    clearHoldTimer();
+    holdTimer = setTimeout(async () => {
+      holdActive = true;
+      holdStartedPlayback = video.paused;
+      video.playbackRate = 3;
+      holdIndicator.classList.add("active");
+      navigator.vibrate?.(12);
+      if (video.paused) {
+        try { await video.play(); } catch (_) {}
+      }
+    }, 350);
+    stage.setPointerCapture?.(event.pointerId);
+  });
+  stage.addEventListener("pointermove", event => {
+    if (event.pointerId !== pointerId || holdActive) return;
+    if (Math.hypot(event.clientX - pointerStartX, event.clientY - pointerStartY) > 12) {
+      pointerMoved = true;
+      clearHoldTimer();
+    }
+  });
+  stage.addEventListener("pointerup", event => {
+    if (event.pointerId !== pointerId) return;
+    const wasHolding = holdActive;
+    finishHold();
+    if (!wasHolding && !pointerMoved) togglePlayback();
+  });
+  stage.addEventListener("pointercancel", finishHold);
+  video.addEventListener("contextmenu", event => event.preventDefault());
+  stage.addEventListener("keydown", event => {
+    if (event.code === "Space") {
+      event.preventDefault();
+      togglePlayback();
+    }
+  });
+
+  video._cleanupVideoPlayer = finishHold;
+  updatePlayState();
+  updateTime();
+}
+
+function createPreviewObjectUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  previewObjectUrls.push(url);
+  return url;
+}
+
+function releasePreviewResources() {
+  const content = document.getElementById("pvContent");
+  content?.querySelectorAll("video, audio").forEach(media => {
+    media._cleanupVideoPlayer?.();
+    try { media.pause(); } catch (_) {}
+    media.removeAttribute("src");
+    try { media.load(); } catch (_) {}
+  });
+  content?.querySelectorAll("img, iframe").forEach(element => element.removeAttribute("src"));
+  if (content) content.innerHTML = "";
+  previewObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  previewObjectUrls = [];
+  document.querySelector("#previewModal .preview-card")?.classList.remove("media-preview");
+}
+
+function buildStoredVideoUrl(file, mimeType) {
+  const url = new URL("./__pic_manage_media__", window.location.href);
+  url.searchParams.set("id", String(file.id));
+  url.searchParams.set("v", String(file.uploadedAt || 0));
+  url.searchParams.set("mime", mimeType);
+  return url.href;
+}
+
+async function getPublicVideoStreamUrl(file, mimeType) {
+  if (file?.isPrivate || !file?.id || !navigator.serviceWorker?.controller) return null;
+  const url = buildStoredVideoUrl(file, mimeType);
+  try {
+    const probe = await fetch(url, {
+      cache: "no-store",
+      headers: { Range: "bytes=0-0" }
+    });
+    if (probe.status !== 206) return null;
+    await probe.arrayBuffer();
+    return url;
+  } catch (error) {
+    console.warn("[video] ranged media route unavailable; using Blob fallback", error);
+    return null;
+  }
+}
+
 async function openFileView(f) {
   try {
     const ext = getFileExt(f.name);
@@ -3345,8 +3695,11 @@ async function openFileView(f) {
 
     const modal = document.getElementById("previewModal");
     const content = document.getElementById("pvContent");
+    const previewCard = modal.querySelector(".preview-card");
+    const videoFile = isVideoFormat(fmt) || isVideoFileName(f.name) || String(f.type || "").toLowerCase().startsWith("video/");
+    releasePreviewResources();
+    previewCard?.classList.toggle("media-preview", videoFile);
     document.getElementById("pvTitle").textContent = f.name;
-    content.innerHTML = "";
 
     document.getElementById("pvDownloadBtn").onclick = async () => {
       const downloadBlob = await loadBlob();
@@ -3355,12 +3708,56 @@ async function openFileView(f) {
       const a = document.createElement("a"); a.href = url; a.download = f.name; a.click(); URL.revokeObjectURL(url);
     };
 
-    if ((isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) && f.size > LARGE_PREVIEW_BYTES) {
+    if (videoFile) {
+      const mimeType = getVideoMimeType(f, fmt);
+      const shell = document.createElement("div");
+      shell.className = "video-player-shell";
+      const stage = document.createElement("div");
+      stage.className = "video-stage";
+      stage.tabIndex = 0;
+      const video = document.createElement("video");
+      video.className = "preview-video";
+      video.controls = false;
+      video.preload = "metadata";
+      video.playsInline = true;
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "");
+      video.setAttribute("x-webkit-airplay", "allow");
+      video.setAttribute("aria-label", f.name);
+      const error = document.createElement("div");
+      error.className = "video-playback-error";
+      error.hidden = true;
+      error.textContent = lang === "zh"
+        ? "无法播放该视频。当前浏览器可能不支持此视频编码，可使用下载按钮在其他播放器中打开。"
+        : "This video codec is not supported by the current browser. Download it to open in another player.";
+      const holdIndicator = document.createElement("div");
+      holdIndicator.className = "video-hold-speed";
+      holdIndicator.textContent = lang === "zh" ? "3× 快速播放" : "3× Fast playback";
+      const controls = document.createElement("div");
+      controls.className = "video-custom-controls";
+      stage.append(video, holdIndicator, error);
+      shell.append(stage, controls);
+      content.appendChild(shell);
+      setupVideoControls(video, stage, controls, holdIndicator);
+
+      const streamUrl = await getPublicVideoStreamUrl(f, mimeType);
+      if (streamUrl) {
+        video.src = streamUrl;
+      } else {
+        blob = await loadBlob();
+        if (!blob) return;
+        const playableBlob = blob.type === mimeType ? blob : blob.slice(0, blob.size, mimeType);
+        video.src = createPreviewObjectUrl(playableBlob);
+      }
+      video.addEventListener("loadeddata", () => { error.hidden = true; }, { once: true });
+      video.addEventListener("error", () => { error.hidden = false; });
+      video.load();
+    } else if ((isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) && f.size > LARGE_PREVIEW_BYTES) {
       content.innerHTML = "<div class=\"empty-placeholder\" style=\"border:none\"><p>图片文件过大，建议直接下载查看</p></div>";
     } else if (isImageFormat(fmt) || ["png","jpg","jpeg","gif","webp","svg","bmp"].includes(ext)) {
       blob = await loadBlob();
       if (!blob) return;
-      const img = document.createElement("img"); img.src = URL.createObjectURL(blob); content.appendChild(img);
+      const img = document.createElement("img"); img.src = createPreviewObjectUrl(blob); content.appendChild(img);
       img.addEventListener("load", () => enableImageZoom(img, content), { once: true });
     } else if (fmt === "pdf" || ext === "pdf") {
       if (f.size > LARGE_PREVIEW_BYTES) {
@@ -3368,7 +3765,7 @@ async function openFileView(f) {
       } else {
         blob = await loadBlob();
         if (!blob) return;
-        const iframe = document.createElement("iframe"); iframe.src = URL.createObjectURL(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
+        const iframe = document.createElement("iframe"); iframe.src = createPreviewObjectUrl(blob); iframe.style.cssText = "width:100%;height:55vh;border:none;border-radius:8px;"; content.appendChild(iframe);
       }
     } else if (isText || ["txt","json","xml","js","html","css","md","log"].includes(ext)) {
       if ((f.size || 0) > MAX_TEXT_PREVIEW_BYTES || f.size > LARGE_PREVIEW_BYTES) {
@@ -3401,7 +3798,10 @@ async function openFileView(f) {
   }
 }
 
-function closePreview() { document.getElementById("previewModal").classList.remove("active"); document.getElementById("pvContent").innerHTML = ""; }
+function closePreview() {
+  document.getElementById("previewModal").classList.remove("active");
+  releasePreviewResources();
+}
 
 /* ===== SEED DEMO DATA ===== */
 async function seedIfEmpty() {
