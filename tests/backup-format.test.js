@@ -159,6 +159,24 @@ function testExportSizeValidation() {
   );
 }
 
+async function testPrivateExportCredentialSnapshot() {
+  let credentialSeen = null;
+  context.dbReadStoredRange = async () => new Uint8Array(28);
+  context.isChunkedEncryptedData = () => true;
+  context.readUint32FromBytes = () => 4;
+  context.deriveKey = async credential => {
+    credentialSeen = credential;
+    return {};
+  };
+
+  const reader = await context.backupCreatePlainFileReader(
+    { id: 7, name: "private.bin", size: 4, isPrivate: true },
+    "captured-admin-key"
+  );
+  assert.equal(credentialSeen, "captured-admin-key");
+  assert.equal(reader.size, 4);
+}
+
 function testLargeExportVolumePlan() {
   const mib = 1024 * 1024;
   const files = [
@@ -173,8 +191,15 @@ function testLargeExportVolumePlan() {
     ["a.bin"],
     ["b.bin"],
     ["c.bin"],
-    ["large.bin"],
-    ["d.bin"]
+    ["large.bin", "d.bin"]
+  ]));
+
+  const tinyLeadingVolume = context.backupPlanVolumes([
+    { name: "metadata.log", size: 100 * 1024 },
+    { name: "archive.bin", size: 325 * mib }
+  ], 256 * mib);
+  assert.equal(JSON.stringify(tinyLeadingVolume.map(volume => volume.map(file => file.name))), JSON.stringify([
+    ["metadata.log", "archive.bin"]
   ]));
   assert.equal(context.backupVolumeDownloadName("full.zip", 0, 12), "full.part-01-of-12.zip");
   assert.equal(context.backupVolumeDownloadName("full.pmbak", 11, 12), "full.part-12-of-12.pmbak");
@@ -184,6 +209,7 @@ function testLargeExportVolumePlan() {
   await testPlainZipRoundTrip();
   await testEncryptedRoundTrip();
   testExportSizeValidation();
+  await testPrivateExportCredentialSnapshot();
   testLargeExportVolumePlan();
   console.log("Backup format tests passed");
 })().catch(error => {

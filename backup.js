@@ -19,6 +19,7 @@ const BACKUP_IO_CHUNK_BYTES = 4 * 1024 * 1024;
 const BACKUP_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const BACKUP_ZIP_UINT32_MAX = 0xffffffff;
 const BACKUP_VOLUME_TARGET_BYTES = 256 * 1024 * 1024;
+const BACKUP_VOLUME_MIN_BYTES = 32 * 1024 * 1024;
 const BACKUP_DOWNLOAD_RELEASE_MS = 60 * 1000;
 
 let backupExportState = null;
@@ -93,6 +94,7 @@ function backupAppendNameSuffix(name, suffix) {
 
 function backupPlanVolumes(files, targetBytes = BACKUP_VOLUME_TARGET_BYTES) {
   const limit = Math.max(1, Number(targetBytes) || BACKUP_VOLUME_TARGET_BYTES);
+  const minimum = Math.min(BACKUP_VOLUME_MIN_BYTES, limit / 8);
   const volumes = [];
   let current = [];
   let currentBytes = 0;
@@ -113,6 +115,25 @@ function backupPlanVolumes(files, targetBytes = BACKUP_VOLUME_TARGET_BYTES) {
     }
   }
   if (current.length || !volumes.length) volumes.push(current);
+
+  // A large file immediately after a small one used to create a tiny first
+  // download containing only metadata. Keep the size target soft and merge
+  // undersized edge volumes into a neighbor instead.
+  for (let index = 0; index < volumes.length && volumes.length > 1;) {
+    const bytes = volumes[index].reduce((sum, file) => sum + Math.max(0, Number(file?.size || 0)), 0);
+    if (bytes >= minimum) {
+      index++;
+      continue;
+    }
+    if (index === 0) {
+      volumes[1] = [...volumes[0], ...volumes[1]];
+      volumes.shift();
+    } else {
+      volumes[index - 1].push(...volumes[index]);
+      volumes.splice(index, 1);
+      index = Math.max(0, index - 1);
+    }
+  }
   return volumes;
 }
 
@@ -267,10 +288,10 @@ async function backupDeriveKey(password, salt, iterations) {
   );
 }
 
-async function backupDecryptFramedPrivateFile(file, header) {
+async function backupDecryptFramedPrivateFile(file, header, credential) {
   const plainChunkSize = readUint32FromBytes(header, 24);
   if (!plainChunkSize || plainChunkSize > 64 * 1024 * 1024) throw new Error("私密文件加密分块无效");
-  const key = await deriveKey(adminKey, header.slice(8, 24));
+  const key = await deriveKey(credential, header.slice(8, 24));
   const parts = [];
   const plainSize = Number(file.size || 0);
   const chunkCount = Math.ceil(plainSize / plainChunkSize);
@@ -293,10 +314,10 @@ async function backupDecryptFramedPrivateFile(file, header) {
   return new Blob(parts, { type: file.type || "application/octet-stream" });
 }
 
-async function backupDecryptLegacyPrivateFile(file, header) {
+async function backupDecryptLegacyPrivateFile(file, header, credential) {
   const raw = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(adminKey),
+    new TextEncoder().encode(credential),
     "PBKDF2",
     false,
     ["deriveBits"]
@@ -330,21 +351,21 @@ async function backupDecryptLegacyPrivateFile(file, header) {
   return new Blob(parts, { type: file.type || "application/octet-stream" });
 }
 
-async function backupPlainBlobForFile(file) {
+async function backupPlainBlobForFile(file, credential) {
   if (!file.isPrivate) {
     const full = await ensureFileData(file);
     const blob = full.data instanceof Blob ? full.data : new Blob([full.data || new Uint8Array(0)]);
     return blob.type || !file.type ? blob : new Blob([blob], { type: file.type });
   }
-  if (!adminKey) throw new Error("管理员会话已过期");
+  if (!credential) throw new Error("管理员会话已过期");
   const header = await dbReadStoredRange(file, 0, 28);
   if (header.length < 28) throw new Error("私密文件头不完整");
   return isChunkedEncryptedData(header)
-    ? backupDecryptFramedPrivateFile(file, header)
-    : backupDecryptLegacyPrivateFile(file, header);
+    ? backupDecryptFramedPrivateFile(file, header, credential)
+    : backupDecryptLegacyPrivateFile(file, header, credential);
 }
 
-async function backupCreatePlainFileReader(file) {
+async function backupCreatePlainFileReader(file, credential) {
   const size = Math.max(0, Number(file?.size || 0));
   if (!file.isPrivate) {
     return {
@@ -353,7 +374,7 @@ async function backupCreatePlainFileReader(file) {
       read: (start, end) => dbReadStoredRange(file, start, end)
     };
   }
-  if (!adminKey) throw new Error("管理员会话已过期");
+  if (!credential) throw new Error("管理员会话已过期");
 
   const header = await dbReadStoredRange(file, 0, 28);
   if (header.length < 28) throw new Error("私密文件头不完整");
@@ -361,7 +382,7 @@ async function backupCreatePlainFileReader(file) {
   if (isChunkedEncryptedData(header)) {
     const plainChunkSize = readUint32FromBytes(header, 24);
     if (!plainChunkSize || plainChunkSize > 64 * 1024 * 1024) throw new Error("私密文件加密分块无效");
-    const key = await deriveKey(adminKey, header.slice(8, 24));
+    const key = await deriveKey(credential, header.slice(8, 24));
     return {
       record: file,
       size,
@@ -396,7 +417,7 @@ async function backupCreatePlainFileReader(file) {
     };
   }
 
-  const raw = await crypto.subtle.importKey("raw", new TextEncoder().encode(adminKey), "PBKDF2", false, ["deriveBits"]);
+  const raw = await crypto.subtle.importKey("raw", new TextEncoder().encode(credential), "PBKDF2", false, ["deriveBits"]);
   const keyBits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", salt: header.slice(0, 16), iterations: 100000, hash: "SHA-256" },
     raw,
@@ -426,13 +447,13 @@ async function backupCreatePlainFileReader(file) {
   };
 }
 
-async function backupPrepareFiles(files, totalSteps) {
+async function backupPrepareFiles(files, totalSteps, credential) {
   const prepared = [];
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
     backupSetProgress(index, totalSteps, file.name, "正在准备备份");
     try {
-      const blob = await backupPlainBlobForFile(file);
+      const blob = await backupPlainBlobForFile(file, credential);
       if (blob.size !== Number(file.size || 0)) {
         throw new Error(`文件大小校验失败（预期 ${file.size || 0}，实际 ${blob.size}）`);
       }
@@ -505,6 +526,7 @@ async function runBackupExport(state, mode, password, downloadName) {
   const volumes = backupPlanVolumes(files);
   const collectionId = backupCollectionId();
   const totalBytes = files.reduce((sum, file) => sum + Math.max(0, Number(file.size || 0)), 0);
+  let exportCredential = adminKey;
   try {
     if (volumes.length > 1) {
       toast(`数据量较大，将自动导出 ${volumes.length} 个分卷，请允许浏览器下载多个文件`, "info");
@@ -530,7 +552,7 @@ async function runBackupExport(state, mode, password, downloadName) {
       let output = null;
 
       if (mode === "plain") {
-        const prepared = await backupPrepareFiles(volumeFiles, totalSteps);
+        const prepared = await backupPrepareFiles(volumeFiles, totalSteps, exportCredential);
         output = await backupBuildPlainZip(volumeState, prepared, totalSteps);
       } else {
         output = await backupBuildEncryptedContainer(
@@ -538,7 +560,7 @@ async function runBackupExport(state, mode, password, downloadName) {
           volumeFiles,
           password,
           totalSteps,
-          file => backupCreatePlainFileReader(file)
+          file => backupCreatePlainFileReader(file, exportCredential)
         );
       }
 
@@ -554,6 +576,7 @@ async function runBackupExport(state, mode, password, downloadName) {
     toast("备份导出失败: " + (error?.message || error), "error");
     throw error;
   } finally {
+    exportCredential = null;
     backupHideProgress();
   }
 }
