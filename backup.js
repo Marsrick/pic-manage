@@ -19,7 +19,7 @@ const BACKUP_IO_CHUNK_BYTES = 4 * 1024 * 1024;
 const BACKUP_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const BACKUP_ZIP_UINT32_MAX = 0xffffffff;
 const BACKUP_VOLUME_TARGET_BYTES = 256 * 1024 * 1024;
-const BACKUP_DOWNLOAD_RELEASE_MS = 2500;
+const BACKUP_DOWNLOAD_RELEASE_MS = 60 * 1000;
 
 let backupExportState = null;
 let backupImportPendingFile = null;
@@ -489,6 +489,17 @@ function backupFileMetadataFromRecord(file) {
   };
 }
 
+function backupValidateExportBlob(blob, files, name = "backup") {
+  if (!(blob instanceof Blob) || blob.size <= 0) {
+    throw new Error(`${name}: 导出文件为空`);
+  }
+  const contentBytes = files.reduce((sum, file) => sum + Math.max(0, Number(file?.size || 0)), 0);
+  if (contentBytes > 0 && blob.size < contentBytes) {
+    throw new Error(`${name}: 导出文件不完整（预期至少 ${contentBytes} 字节，实际 ${blob.size} 字节）`);
+  }
+  return blob;
+}
+
 async function runBackupExport(state, mode, password, downloadName) {
   const files = state.files;
   const volumes = backupPlanVolumes(files);
@@ -531,6 +542,7 @@ async function runBackupExport(state, mode, password, downloadName) {
         );
       }
 
+      backupValidateExportBlob(output, volumeFiles, volumeName);
       backupSetProgress(totalSteps, totalSteps, volumeName, `备份已生成${titleSuffix}`);
       await backupDownloadBlob(output, volumeName);
       output = null;
@@ -741,11 +753,18 @@ async function backupBuildEncryptedContainer(state, sources, password, totalStep
     }
     backupSetProgress(fileIndex * 2 + 1, totalSteps, record.name, "正在生成加密备份");
     for (let offset = 0; offset < itemSize; offset += BACKUP_ENCRYPT_CHUNK_BYTES) {
+      const expectedLength = Math.min(itemSize, offset + BACKUP_ENCRYPT_CHUNK_BYTES) - offset;
       let plain;
       try {
         plain = await read(offset, Math.min(itemSize, offset + BACKUP_ENCRYPT_CHUNK_BYTES));
       } catch (error) {
         throw new Error(`${record.name}: ${error?.message || error}`, { cause: error });
+      }
+      const plainLength = plain instanceof ArrayBuffer
+        ? plain.byteLength
+        : (ArrayBuffer.isView(plain) ? plain.byteLength : -1);
+      if (plainLength !== expectedLength) {
+        throw new Error(`${record.name}: 读取到的文件分块不完整（预期 ${expectedLength} 字节，实际 ${Math.max(0, plainLength)} 字节）`);
       }
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
@@ -758,7 +777,7 @@ async function backupBuildEncryptedContainer(state, sources, password, totalStep
   return new Blob(parts, { type: "application/x-pic-manage-backup" });
 }
 
-async function backupDownloadBlob(blob, name) {
+function backupDownloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -767,8 +786,9 @@ async function backupDownloadBlob(blob, name) {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  await new Promise(resolve => setTimeout(resolve, BACKUP_DOWNLOAD_RELEASE_MS));
-  URL.revokeObjectURL(url);
+  // Safari may not consume a large Blob URL until after its download UI opens.
+  // Releasing it after only a few seconds can leave a tiny, truncated file.
+  setTimeout(() => URL.revokeObjectURL(url), BACKUP_DOWNLOAD_RELEASE_MS);
 }
 
 function triggerBackupImport() {

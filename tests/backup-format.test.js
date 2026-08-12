@@ -131,6 +131,32 @@ async function testEncryptedRoundTrip() {
   assert.equal(rangedOpened.manifest.volume.index, 1);
   assert.equal(rangedOpened.manifest.volume.count, 2);
   assert.equal(await blobText(await rangedOpened.getFileBlob(rangedOpened.manifest.files[0], 0)), "range-reader-content");
+
+  await assert.rejects(
+    () => context.backupBuildEncryptedContainer(
+      { scope: "all", folders: [] },
+      [rangeSource],
+      "correct horse",
+      4,
+      async source => ({
+        record: source,
+        size: source.size,
+        read: () => new Uint8Array(1)
+      })
+    ),
+    /读取到的文件分块不完整/
+  );
+}
+
+function testExportSizeValidation() {
+  assert.equal(
+    context.backupValidateExportBlob(new Blob([new Uint8Array(1024)]), [{ size: 1024 }], "full.zip").size,
+    1024
+  );
+  assert.throws(
+    () => context.backupValidateExportBlob(new Blob([new Uint8Array(100)]), [{ size: 1024 }], "full.zip"),
+    /导出文件不完整/
+  );
 }
 
 function testLargeExportVolumePlan() {
@@ -157,6 +183,7 @@ function testLargeExportVolumePlan() {
 (async () => {
   await testPlainZipRoundTrip();
   await testEncryptedRoundTrip();
+  testExportSizeValidation();
   testLargeExportVolumePlan();
   console.log("Backup format tests passed");
 })().catch(error => {
