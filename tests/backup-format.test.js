@@ -70,6 +70,21 @@ async function testPlainZipRoundTrip() {
   assert.equal(empty.size, 0);
 }
 
+async function testPlainBackupIncludesEveryFile() {
+  const prepared = ["one", "two", "three"].map((name, index) => ({
+    record: { name: `${name}.txt`, type: "text/plain", size: name.length, uploadedAt: index + 1 },
+    blob: new Blob([name], { type: "text/plain" })
+  }));
+  const state = { scope: "all", folders: [], files: prepared.map(item => item.record) };
+  const zip = await context.backupBuildPlainZip(state, prepared, 10);
+  const archive = await context.backupOpenZip(zip);
+  const manifestEntry = archive.byName.get(".pic-manage-backup/manifest.json");
+  const manifest = JSON.parse(await blobText(await context.backupExtractZipEntry(archive, manifestEntry)));
+
+  assert.deepEqual(manifest.files.map(file => file.name), ["one.txt", "two.txt", "three.txt"]);
+  for (const file of manifest.files) assert.ok(archive.byName.has(file.archivePath));
+}
+
 async function testEncryptedRoundTrip() {
   const state = { scope: "all", folders: [{ name: "私密", isPrivate: true }] };
   const prepared = [
@@ -177,40 +192,66 @@ async function testPrivateExportCredentialSnapshot() {
   assert.equal(reader.size, 4);
 }
 
-function testLargeExportVolumePlan() {
-  const mib = 1024 * 1024;
+async function testFullExportUsesOneDownload() {
   const files = [
-    { name: "a.bin", size: 180 * mib },
-    { name: "b.bin", size: 180 * mib },
-    { name: "c.bin", size: 80 * mib },
-    { name: "large.bin", size: 325 * mib },
-    { name: "d.bin", size: 10 * mib }
+    { name: "small.log", size: 2, data: new Blob(["ab"]) },
+    { name: "large.bin", size: 3, data: new Blob(["cde"]) },
+    { name: "private.bin", size: 4, data: new Blob(["fghi"]) }
   ];
-  const volumes = context.backupPlanVolumes(files, 256 * mib);
-  assert.equal(JSON.stringify(volumes.map(volume => volume.map(file => file.name))), JSON.stringify([
-    ["a.bin"],
-    ["b.bin"],
-    ["c.bin"],
-    ["large.bin", "d.bin"]
-  ]));
+  const events = [];
+  context.adminKey = "captured-admin-key";
+  context.backupPrepareFiles = async received => {
+    events.push(`prepare:${received.length}`);
+    return received.map(record => ({ record, blob: record.data }));
+  };
+  context.backupBuildPlainZip = async (state, prepared) => {
+    events.push(`build:${state.files.length}:${prepared.length}:${state.volume}`);
+    return new Blob(prepared.map(item => item.blob));
+  };
+  context.backupDownloadBlob = async (blob, name) => {
+    events.push(`download:${name}:${blob.size}`);
+  };
+  context.toast = () => {};
 
-  const tinyLeadingVolume = context.backupPlanVolumes([
-    { name: "metadata.log", size: 100 * 1024 },
-    { name: "archive.bin", size: 325 * mib }
-  ], 256 * mib);
-  assert.equal(JSON.stringify(tinyLeadingVolume.map(volume => volume.map(file => file.name))), JSON.stringify([
-    ["metadata.log", "archive.bin"]
-  ]));
-  assert.equal(context.backupVolumeDownloadName("full.zip", 0, 12), "full.part-01-of-12.zip");
-  assert.equal(context.backupVolumeDownloadName("full.pmbak", 11, 12), "full.part-12-of-12.pmbak");
+  await context.runBackupExport({ scope: "all", folders: [], files }, "plain", "", "full.zip");
+  assert.deepEqual(events, [
+    "prepare:3",
+    "build:3:3:null",
+    "download:full.zip:9"
+  ]);
+}
+
+async function testFullEncryptedExportUsesOneDownload() {
+  const files = [
+    { name: "public.bin", size: 4 },
+    { name: "private-a.bin", size: 5, isPrivate: true },
+    { name: "private-b.bin", size: 6, isPrivate: true }
+  ];
+  const events = [];
+  context.adminKey = "captured-admin-key";
+  context.backupBuildEncryptedContainer = async (state, received, password) => {
+    events.push(`build:${state.files.length}:${received.length}:${state.volume}:${password}`);
+    return new Blob([new Uint8Array(16)]);
+  };
+  context.backupDownloadBlob = async (blob, name) => {
+    events.push(`download:${name}:${blob.size}`);
+  };
+
+  await context.runBackupExport({ scope: "all", folders: [], files }, "encrypted", "backup-password", "full.pmbak");
+  assert.deepEqual(events, [
+    "build:3:3:null:backup-password",
+    "download:full.pmbak:16"
+  ]);
 }
 
 (async () => {
   await testPlainZipRoundTrip();
+  await testPlainBackupIncludesEveryFile();
   await testEncryptedRoundTrip();
   testExportSizeValidation();
   await testPrivateExportCredentialSnapshot();
-  testLargeExportVolumePlan();
+  await testFullExportUsesOneDownload();
+  await testFullEncryptedExportUsesOneDownload();
   console.log("Backup format tests passed");
 })().catch(error => {
   console.error(error);
