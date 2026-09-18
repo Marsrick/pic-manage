@@ -10,7 +10,7 @@ let resolveLock;
 const lock = { release: async () => { releases++; }, addEventListener() {} };
 const context = vm.createContext({
   console, URL, Blob, Map, Set, performance,
-  document: { addEventListener: (name, fn) => { listeners[name] = fn; }, visibilityState: 'visible' },
+  document: { getElementById: () => null, addEventListener: (name, fn) => { listeners[name] = fn; }, visibilityState: 'visible' },
   navigator: { wakeLock: { request: async () => { requests++; return lock; } } },
   dbAll: async () => [
     { id: 10, name: '10.cbz', folder: 'book' },
@@ -21,6 +21,8 @@ const context = vm.createContext({
     { id: 5, name: '5.txt', folder: 'book' }
   ],
   isAdmin: false, isFileVisibleInPublicMode: f => !f.isPrivate,
+  probeStoredFileFormat: async f => ({ fmt: f.name.endsWith('.dat') ? 'zip' : 'unknown' }),
+  isArchiveFormat: fmt => fmt === 'zip',
   toast() {}, t: key => key
 });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../reader.js'), 'utf8'), context);
@@ -33,6 +35,18 @@ const run = code => vm.runInContext(code, context);
   assert.equal((await run('getNextReaderChapter()')).id, 10);
   run('readerFile.id = 10');
   assert.equal(await run('getNextReaderChapter()'), null);
+
+  const originalDbAll = context.dbAll;
+  context.dbAll = async () => [
+    { id: 1, name: '01.dat', folder: 'book' },
+    { id: 2, name: '02.txt', folder: 'book' },
+    { id: 3, name: '03.dat', folder: 'book' }
+  ];
+  context.isAdmin = true;
+  run('readerFile = { id: "1", folder: "book" }');
+  assert.equal((await run('getNextReaderChapter()')).id, 3);
+  context.isAdmin = false;
+  context.dbAll = originalDbAll;
   run('readerFile.id = 99');
   assert.equal(await run('getNextReaderChapter()'), null);
 
