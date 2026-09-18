@@ -33,6 +33,7 @@ const T = {
     modeClick: "左右翻页", modeFlip: "仿真翻页", modeSlide: "上下翻页", modeWebtoon: "瀑布模式",
     autoPlay: "自动翻页", interval: "间隔",
     play: "播放", pause: "暂停", readerEnd: "已到最后一页",
+    nextChapter: "下一章", wakeUnavailable: "屏幕常亮不可用，请在系统设置中延长自动锁屏时间",
     decryptErr: "解密失败，密钥可能不匹配", fileTooLarge: "文件过大（建议50MB以内）",
     parsingZip: "正在解析漫画...", parseOk: "页漫画", parseErr: "解析失败",
     sessionExpired: "会话已过期，请重新验证手势",
@@ -92,6 +93,7 @@ const T = {
     modeClick: "Tap Flip", modeFlip: "Page Flip", modeSlide: "Vertical Slide", modeWebtoon: "Webtoon Scroll",
     autoPlay: "Auto Play", interval: "Interval",
     play: "Play", pause: "Pause", readerEnd: "Reached last page",
+    nextChapter: "Next chapter", wakeUnavailable: "Screen wake lock unavailable. Extend auto-lock in system settings.",
     decryptErr: "Decryption failed", fileTooLarge: "File too large (max 50MB)",
     parsingZip: "Parsing comic...", parseOk: " pages", parseErr: "Parse failed",
     sessionExpired: "Session expired, re-verify gesture",
@@ -3694,7 +3696,7 @@ async function getPublicVideoStreamUrl(file, mimeType) {
   }
 }
 
-async function openFileView(f) {
+async function openFileView(f, isCurrent = () => true, readerOnly = false) {
   try {
     const ext = getFileExt(f.name);
     const extLooksArchive = ["zip", "cbz", "cbr", "tar", "gz", "tgz", "7z", "rar"].includes(ext);
@@ -3743,18 +3745,22 @@ async function openFileView(f) {
     if (isArchiveFormat(fmt)) {
       if (extLooksArchive || isAdmin) {
         if (fmt === "zip" && rangeSource) {
-          openComicReader(rangeSource, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
-          return;
+          if (!isCurrent()) return;
+          return await openComicReader(rangeSource, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob), f);
         }
         blob = await loadBlob();
         if (!blob) return;
-        openComicReader(blob, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob));
-        return;
+        if (!isCurrent()) return;
+        return await openComicReader(blob, f.name, firstImageBlob => saveComicCoverFromImage(f, firstImageBlob), f);
       }
       toast("此文件实际为压缩包，需管理员权限解析", "info");
       return;
     }
 
+    if (readerOnly) {
+      if (isCurrent()) toast(t("parseErr"), "error");
+      return;
+    }
     const modal = document.getElementById("previewModal");
     const content = document.getElementById("pvContent");
     const previewCard = modal.querySelector(".preview-card");

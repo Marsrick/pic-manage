@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "build": "node copy-assets.js",
-    "test": "node tests/backup-format.test.js && node tests/large-import.test.js && node tests/video-support.test.js",
+    "test": "node tests/backup-format.test.js && node tests/large-import.test.js && node tests/video-support.test.js && node tests/reader-navigation.test.js",
     "cap:sync": "npx cap sync",
     "cap:add-ios": "npx cap add ios"
   },

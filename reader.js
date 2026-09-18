@@ -15,6 +15,78 @@ let pageFlipBook = null;
 let pageFlipInitSeq = 0;
 let pageFlipRenderUrls = [];
 let readerOpenSeq = 0;
+let readerFile = null;
+let readerChapterLoading = false;
+let readerWakeLock = null;
+let readerWakePending = false;
+
+async function getNextReaderChapter() {
+  if (!readerFile) return null;
+  const file = readerFile;
+  const files = (await dbAll()).filter(f =>
+    (f.folder || "") === (file.folder || "") &&
+    (isAdmin || isFileVisibleInPublicMode(f)) &&
+    /\.(zip|cbz|cbr|7z|tar|gz|tgz|rar)$/i.test(f.name)
+  ).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  const index = files.findIndex(f => f.id === file.id);
+  return index < 0 ? null : files[index + 1] || null;
+}
+
+async function nextReaderChapter() {
+  if (readerChapterLoading) return;
+  readerChapterLoading = true;
+  const seq = readerOpenSeq;
+  cancelAutoCycle();
+  try {
+    const next = await getNextReaderChapter();
+    if (seq !== readerOpenSeq) return;
+    if (!next) {
+      stopAuto();
+      toast(t("readerEnd"), "info");
+      document.getElementById("readerControls")?.classList.add("visible");
+      return;
+    }
+    await openFileView(next, () => seq === readerOpenSeq, true);
+    if (seq !== readerOpenSeq && readerFile?.id !== next.id) return;
+    if (seq === readerOpenSeq || !readerPages.length) stopAuto();
+    else if (rAutoPlaying) scheduleAutoCycle();
+  } catch (error) {
+    stopAuto();
+    toast(t("parseErr"), "error");
+    console.warn("[reader] next chapter failed", error);
+  } finally {
+    readerChapterLoading = false;
+  }
+}
+
+async function acquireReaderWakeLock() {
+  if (!rAutoPlaying || document.visibilityState !== "visible" || readerWakeLock || readerWakePending) return;
+  if (!navigator.wakeLock) {
+    toast(t("wakeUnavailable"), "info");
+    return;
+  }
+  readerWakePending = true;
+  try {
+    const lock = await navigator.wakeLock.request("screen");
+    if (!rAutoPlaying || document.visibilityState !== "visible") {
+      await lock.release();
+      return;
+    }
+    readerWakeLock = lock;
+    lock.addEventListener("release", () => {
+      if (readerWakeLock === lock) readerWakeLock = null;
+    });
+  } catch (error) {
+    console.warn("[reader] screen wake lock unavailable", error);
+    if (rAutoPlaying) toast(t("wakeUnavailable"), "info");
+  } finally {
+    readerWakePending = false;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void acquireReaderWakeLock();
+});
 let readerExtractWorker = null;
 let readerLazyWorker = null;
 let readerLazyPending = new Map();
@@ -692,8 +764,18 @@ async function extractImagesForReader(name, blob) {
 }
 
 /* ===== OPEN READER ===== */
-async function openComicReader(zipBlob, name, onFirstImageLoaded) {
+async function openComicReader(zipBlob, name, onFirstImageLoaded, file = null) {
   const openSeq = ++readerOpenSeq;
+  cancelAutoCycle();
+  readerFile = file;
+  const chapterBtn = document.getElementById("rNextChapterBtn");
+  chapterBtn.disabled = true;
+  getNextReaderChapter().then(next => {
+    if (openSeq === readerOpenSeq) {
+      chapterBtn.disabled = !next;
+      chapterBtn.title = next ? next.name : t("readerEnd");
+    }
+  }).catch(error => console.warn("[reader] chapter list unavailable", error));
   const overlay = document.getElementById("readerOverlay");
   const canvas = document.getElementById("readerCanvas");
   overlay.classList.add("active");
@@ -720,6 +802,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 
     const total = result.lazy ? result.total : result.images.length;
     if (total === 0) {
+      stopAuto();
       canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
       return;
     }
@@ -760,6 +843,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
   } catch (e) {
     console.error(e);
     if (openSeq === readerOpenSeq) {
+      stopAuto();
       canvas.innerHTML = `<div class="empty-placeholder" style="border:none"><p>${t("parseErr")}</p></div>`;
     }
   }
@@ -768,6 +852,7 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded) {
 /* ===== CLOSE READER ===== */
 function closeReader() {
   readerOpenSeq++;
+  readerFile = null;
   stopAuto();
   disconnectReaderImageObserver();
   stopReaderLazyWorker();
@@ -1510,7 +1595,7 @@ async function animateCurl(dir, startFold, touchYRatio = 0.84, curlTilt = 0, rel
   if (curlBusy) return;
   const next = rPageIdx + dir;
   if (next < 0 || next >= readerPages.length) {
-    if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+    if (next >= readerPages.length) void nextReaderChapter();
     drawCurlStatic();
     return;
   }
@@ -1941,7 +2026,7 @@ function flipPage(dir, corner = "top") {
     }
     const next = rPageIdx + dir;
     if (next < 0 || next >= readerPages.length) {
-      if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+      if (next >= readerPages.length) void nextReaderChapter();
       return;
     }
     if (typeof pageFlipBook.getState === "function" && pageFlipBook.getState() !== "read") return;
@@ -1950,7 +2035,7 @@ function flipPage(dir, corner = "top") {
   }
   const next = rPageIdx + dir;
   if (next < 0 || next >= readerPages.length) {
-    if (next >= readerPages.length) { stopAuto(); toast(t("readerEnd"), "info"); }
+    if (next >= readerPages.length) void nextReaderChapter();
     return;
   }
   if (rMode === "click") {
@@ -2294,16 +2379,14 @@ function scheduleAutoCycle() {
     if (rMode === "webtoon") {
       const wrap = document.getElementById("vScroll");
       if (!wrap || Math.ceil(wrap.scrollTop + wrap.clientHeight) >= wrap.scrollHeight - 1) {
-        stopAuto();
-        toast(t("readerEnd"), "info");
+        void nextReaderChapter();
         return;
       }
       wrap.scrollBy({ top: wrap.clientHeight * 0.8, behavior: "smooth" });
     } else if (rPageIdx < readerPages.length - 1) {
       flipPage(1);
     } else {
-      stopAuto();
-      toast(t("readerEnd"), "info");
+      void nextReaderChapter();
       return;
     }
     if (rAutoPlaying) scheduleAutoCycle();
@@ -2311,13 +2394,18 @@ function scheduleAutoCycle() {
 }
 
 function startAuto() {
+  if (!readerPages.length || readerChapterLoading) return;
   rAutoPlaying = true;
+  void acquireReaderWakeLock();
   syncAutoPlayUI();
   scheduleAutoCycle();
 }
 
 function stopAuto() {
   rAutoPlaying = false;
+  const lock = readerWakeLock;
+  readerWakeLock = null;
+  if (lock) lock.release().catch(error => console.warn("[reader] wake lock release failed", error));
   cancelAutoCycle();
   syncAutoPlayUI();
 }
