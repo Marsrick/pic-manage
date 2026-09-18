@@ -21,6 +21,8 @@ const context = vm.createContext({
     { id: 5, name: '5.txt', folder: 'book' }
   ],
   isAdmin: false, isFileVisibleInPublicMode: f => !f.isPrivate,
+  visibleReaderFileIds: [],
+  sortFiles: files => files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
   probeStoredFileFormat: async f => ({ fmt: f.name.endsWith('.dat') ? 'zip' : 'unknown' }),
   isArchiveFormat: fmt => fmt === 'zip',
   toast() {}, t: key => key
@@ -31,6 +33,14 @@ const run = code => vm.runInContext(code, context);
 (async () => {
   run('readerFile = { id: 1, folder: "book" }');
   assert.equal((await run('getNextReaderChapter()')).id, 2);
+  assert.equal(await run('getNextReaderChapter(-1)'), null);
+  context.visibleReaderFileIds = ['10', '1', '5', '2'];
+  assert.equal((await run('getNextReaderChapter(-1)')).id, 10);
+  assert.equal((await run('getNextReaderChapter()')).id, 2);
+  context.visibleReaderFileIds = ['2', '1'];
+  assert.equal(await run('getNextReaderChapter()'), null);
+  assert.equal((await run('getNextReaderChapter(-1)')).id, 2);
+  context.visibleReaderFileIds = [];
   run('readerFile.id = 2');
   assert.equal((await run('getNextReaderChapter()')).id, 10);
   run('readerFile.id = 10');

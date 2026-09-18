@@ -20,16 +20,21 @@ let readerChapterLoading = false;
 let readerWakeLock = null;
 let readerWakePending = false;
 
-async function getNextReaderChapter() {
+async function getNextReaderChapter(direction = 1) {
   if (!readerFile) return null;
   const file = readerFile;
-  const files = (await dbAll()).filter(f =>
+  const all = (await dbAll()).filter(f => isAdmin || isFileVisibleInPublicMode(f));
+  const byId = new Map(all.map(f => [String(f.id), f]));
+  const files = visibleReaderFileIds.includes(String(file.id))
+    ? visibleReaderFileIds.map(id => byId.get(id)).filter(Boolean)
+    : sortFiles(all.filter(f =>
     (f.folder || "") === (file.folder || "") &&
     (isAdmin || isFileVisibleInPublicMode(f))
-  ).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  ));
   const index = files.findIndex(f => String(f.id) === String(file.id));
   if (index < 0) return null;
-  for (const candidate of files.slice(index + 1)) {
+  for (let i = index + direction; i >= 0 && i < files.length; i += direction) {
+    const candidate = files[i];
     if (/\.(zip|cbz|cbr|7z|tar|gz|tgz|rar)$/i.test(candidate.name)) return candidate;
     if (!isAdmin) continue;
     const probe = candidate.isPrivate
@@ -40,10 +45,10 @@ async function getNextReaderChapter() {
   return null;
 }
 
-async function nextReaderChapter() {
+async function nextReaderChapter(direction = 1) {
   if (readerChapterLoading) return;
   readerChapterLoading = true;
-  const button = document.getElementById("rNextChapterBtn");
+  const button = document.getElementById(direction < 0 ? "rPrevChapterBtn" : "rNextChapterBtn");
   if (button) {
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
@@ -52,11 +57,11 @@ async function nextReaderChapter() {
   const seq = readerOpenSeq;
   cancelAutoCycle();
   try {
-    const next = await getNextReaderChapter();
+    const next = await getNextReaderChapter(direction);
     if (seq !== readerOpenSeq) return;
     if (!next) {
       stopAuto();
-      toast(t("readerEnd"), "info");
+      toast(t(direction < 0 ? "readerStart" : "readerEnd"), "info");
       document.getElementById("readerControls")?.classList.add("visible");
       return;
     }
@@ -72,7 +77,7 @@ async function nextReaderChapter() {
     readerChapterLoading = false;
     if (button) {
       button.removeAttribute("aria-busy");
-      button.querySelector("span").textContent = t("nextChapter");
+      button.querySelector("span").textContent = t(direction < 0 ? "prevChapter" : "nextChapter");
       button.disabled = false;
     }
   }
@@ -787,17 +792,19 @@ async function openComicReader(zipBlob, name, onFirstImageLoaded, file = null) {
   const openSeq = ++readerOpenSeq;
   cancelAutoCycle();
   readerFile = file;
-  const chapterBtn = document.getElementById("rNextChapterBtn");
+  for (const direction of [-1, 1]) {
+  const chapterBtn = document.getElementById(direction < 0 ? "rPrevChapterBtn" : "rNextChapterBtn");
   chapterBtn.disabled = true;
-  getNextReaderChapter().then(next => {
+  getNextReaderChapter(direction).then(next => {
     if (openSeq === readerOpenSeq) {
       chapterBtn.disabled = !next;
-      chapterBtn.title = next ? next.name : t("readerEnd");
+      chapterBtn.title = next ? next.name : t(direction < 0 ? "readerStart" : "readerEnd");
     }
   }).catch(error => {
     if (openSeq === readerOpenSeq) chapterBtn.disabled = false;
     console.warn("[reader] chapter list unavailable", error);
   });
+  }
   const overlay = document.getElementById("readerOverlay");
   const canvas = document.getElementById("readerCanvas");
   overlay.classList.add("active");

@@ -33,7 +33,7 @@ const T = {
     modeClick: "左右翻页", modeFlip: "仿真翻页", modeSlide: "上下翻页", modeWebtoon: "瀑布模式",
     autoPlay: "自动翻页", interval: "间隔",
     play: "播放", pause: "暂停", readerEnd: "已到最后一页",
-    nextChapter: "下一章", wakeUnavailable: "屏幕常亮不可用，请在系统设置中延长自动锁屏时间",
+    prevChapter: "上一章", readerStart: "已到第一章", nextChapter: "下一章", wakeUnavailable: "屏幕常亮不可用，请在系统设置中延长自动锁屏时间",
     decryptErr: "解密失败，密钥可能不匹配", fileTooLarge: "文件过大（建议50MB以内）",
     parsingZip: "正在解析漫画...", parseOk: "页漫画", parseErr: "解析失败",
     sessionExpired: "会话已过期，请重新验证手势",
@@ -93,7 +93,7 @@ const T = {
     modeClick: "Tap Flip", modeFlip: "Page Flip", modeSlide: "Vertical Slide", modeWebtoon: "Webtoon Scroll",
     autoPlay: "Auto Play", interval: "Interval",
     play: "Play", pause: "Pause", readerEnd: "Reached last page",
-    nextChapter: "Next chapter", wakeUnavailable: "Screen wake lock unavailable. Extend auto-lock in system settings.",
+    prevChapter: "Previous chapter", readerStart: "Reached first chapter", nextChapter: "Next chapter", wakeUnavailable: "Screen wake lock unavailable. Extend auto-lock in system settings.",
     decryptErr: "Decryption failed", fileTooLarge: "File too large (max 50MB)",
     parsingZip: "Parsing comic...", parseOk: " pages", parseErr: "Parse failed",
     sessionExpired: "Session expired, re-verify gesture",
@@ -1249,6 +1249,7 @@ function getIconSVG(name) {
 }
 
 /* ===== RENDER FILE LIST (Public) ===== */
+let visibleReaderFileIds = [];
 async function refreshFileList() {
   const area = document.getElementById("fileListArea");
   applyFileView();
@@ -1267,6 +1268,7 @@ async function refreshFileList() {
       const folderNames = getVisibleFolderNames(base)
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }) * (fileSort === "name-desc" ? -1 : 1));
       const rootFiles = sortFiles(base.filter(f => !f.folder));
+      visibleReaderFileIds = rootFiles.map(f => String(f.id));
 
       let html = folderNames.map(n => renderFolderRow(n, base)).join("");
       html += rootFiles.map(f => renderFileRow(f, isAdmin)).join("");
@@ -1286,6 +1288,7 @@ async function refreshFileList() {
     if (currentFilter !== "all") filtered = filtered.filter(f => getFileCat(f.name) === currentFilter);
     if (q) filtered = filtered.filter(f => f.name.toLowerCase().includes(q));
     filtered = sortFiles(filtered);
+    visibleReaderFileIds = filtered.map(f => String(f.id));
 
     let html = "";
     if (currentFolder !== null) html += renderBackRow(currentFolder);
