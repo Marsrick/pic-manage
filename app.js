@@ -331,6 +331,16 @@ function dbGetChunkBatchOnce(fileId, firstIndex, lastIndex) {
     tx.onabort = () => { if (!failed) rej(tx.error || new Error("IndexedDB chunk batch read aborted")); };
   });
 }
+let dbReadRecovery = null;
+async function recoverDatabaseReadConnection() {
+  if (!dbReadRecovery) {
+    dbReadRecovery = (async () => {
+      if (db) db.close();
+      await openDB();
+    })().finally(() => { dbReadRecovery = null; });
+  }
+  return dbReadRecovery;
+}
 async function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -340,6 +350,7 @@ async function dbGetChunkBatch(fileId, firstIndex, lastIndex) {
       lastError = error;
       if (!isTransientIndexedDbError(error) || attempt === 2) throw error;
       await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+      await recoverDatabaseReadConnection();
     }
   }
   throw lastError;

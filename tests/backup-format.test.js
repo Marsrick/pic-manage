@@ -244,12 +244,29 @@ async function testFullEncryptedExportUsesOneDownload() {
   ]);
 }
 
+async function testPlainExportReadsBoundedChunks() {
+  const originalRead = context.dbReadStoredRange;
+  const size = 4 * 1024 * 1024 + 3;
+  const ranges = [];
+  context.dbReadStoredRange = async (_file, start, end) => {
+    ranges.push([start, end]);
+    return new Uint8Array(end - start).fill(42);
+  };
+  try {
+    const prepared = await context.backupPrepareFiles([{ name: 'large.bin', size }], 4, null);
+    assert.equal(prepared[0].blob.size, size);
+    assert.deepEqual(ranges, [[0, 4 * 1024 * 1024], [4 * 1024 * 1024, size]]);
+    assert.equal(new Uint8Array(await prepared[0].blob.slice(-1).arrayBuffer())[0], 42);
+  } finally { context.dbReadStoredRange = originalRead; }
+}
+
 (async () => {
   await testPlainZipRoundTrip();
   await testPlainBackupIncludesEveryFile();
   await testEncryptedRoundTrip();
   testExportSizeValidation();
   await testPrivateExportCredentialSnapshot();
+  await testPlainExportReadsBoundedChunks();
   await testFullExportUsesOneDownload();
   await testFullEncryptedExportUsesOneDownload();
   console.log("Backup format tests passed");

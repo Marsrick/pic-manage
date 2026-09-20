@@ -392,7 +392,17 @@ async function backupPrepareFiles(files, totalSteps, credential) {
     const file = files[index];
     backupSetProgress(index, totalSteps, file.name, "正在准备备份");
     try {
-      const blob = await backupPlainBlobForFile(file, credential);
+      const reader = await backupCreatePlainFileReader(file, credential);
+      const parts = [];
+      for (let offset = 0; offset < reader.size; offset += BACKUP_IO_CHUNK_BYTES) {
+        await backupWaitForForeground();
+        const end = Math.min(reader.size, offset + BACKUP_IO_CHUNK_BYTES);
+        const bytes = await reader.read(offset, end);
+        if (bytes.byteLength !== end - offset) throw new Error("文件分块不完整");
+        parts.push(new Blob([bytes]));
+        await backupYield();
+      }
+      const blob = new Blob(parts, { type: file.type || "application/octet-stream" });
       if (blob.size !== Number(file.size || 0)) {
         throw new Error(`文件大小校验失败（预期 ${file.size || 0}，实际 ${blob.size}）`);
       }

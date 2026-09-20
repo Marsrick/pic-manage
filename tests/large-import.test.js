@@ -205,6 +205,33 @@ async function testRangeReadRepairsHistoricalChunkSize(context) {
   assert.deepStrictEqual(Array.from(bytes), [1, 2, 3, 4, 5, 6, 7, 8], "range reads must use the observed historical chunk size");
 }
 
+async function testReadReconnectsAfterClosedDatabase(context) {
+  const result = await vm.runInContext(`(async () => {
+    const oldDb = db;
+    const oldOpen = openDB;
+    const oldRead = dbGetChunkBatchOnce;
+    let reads = 0, opens = 0, closes = 0;
+    db = { close() { closes++; } };
+    openDB = async () => { opens++; };
+    dbGetChunkBatchOnce = async () => {
+      if (++reads === 1) {
+        const error = new Error("connection closed");
+        error.name = "InvalidStateError";
+        throw error;
+      }
+      return [{ data: new Uint8Array([7]) }];
+    };
+    try {
+      const chunks = await dbGetChunkBatch(1, 0, 0);
+      return { reads, opens, closes, value: chunks[0].data[0] };
+    } finally { db = oldDb; openDB = oldOpen; dbGetChunkBatchOnce = oldRead; }
+  })()`, context);
+  assert.equal(result.reads, 2);
+  assert.equal(result.opens, 1);
+  assert.equal(result.closes, 1);
+  assert.equal(result.value, 7);
+}
+
 (async () => {
   const context = makeContext();
   await testOver500MbSelectionIsAccepted(context);
@@ -212,6 +239,7 @@ async function testRangeReadRepairsHistoricalChunkSize(context) {
   await testPublicWritesAreBatched(context);
   await testRangeReadUsesEmbeddedHistoricalData(context);
   await testRangeReadRepairsHistoricalChunkSize(context);
+  await testReadReconnectsAfterClosedDatabase(context);
   console.log("large-import tests passed");
 })().catch(error => {
   console.error(error);
